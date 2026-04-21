@@ -4,13 +4,14 @@
 """
 EXPERIMENTO 04 - "Divide & Conquer" (Mixture of Local Experts)
 --------------------------------------------------------------------
-Esta técnica avanzada no utiliza un modelo universal. En lugar de ello:
-1. Aplica un modelo probabilístico (Gaussian Mixture Model) para fragmentar la base
-   de datos en 'sub-fábricas' o dominios operacionales.
-2. Entrena un modelo Maestro Independiente (Local Expert) exclusivo para los datos 
-   de cada clúster.
-3. Al predecir, el sistema evalúa a qué clúster pertenece el registro y delega
-   su evaluación a su experto específico.
+VERSIÓN CORREGIDA — Sin data leakage.
+Cambios:
+  - Holdout test (20%) separado ANTES de cualquier procesamiento.
+  - GMM + StandardScaler fitted SÓLO en train pool.
+  - Optuna ejecutado dentro de cada cluster sólo con datos de train.
+  - Experts OOF evaluados sólo en train pool.
+  - Holdout test routed through GMM → experts entrenados en train pool.
+  - Variable muerta oof_y_global eliminada.
 """
 
 import os
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import optuna
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
@@ -35,55 +36,53 @@ DATA_PATH = '../../data/raw/Dataset_01_Anonimizado.xlsx'
 if not os.path.exists(DATA_PATH):
     DATA_PATH = 'data/raw/Dataset_01_Anonimizado.xlsx'
 
-def load_and_preprocess_data():
+
+def load_raw_data():
     df = pd.read_excel(DATA_PATH)
     target_col = 'Variable de Salida'
     df = df.dropna(subset=[target_col])
-    
-    # Mapping: NOK=1, OK=0
+    df = df.reset_index(drop=True)
+
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
     df = df.drop(columns=[target_col])
-    
+
     y = df['target'].values
     X = df.drop(columns=['target'])
-    
-    # Label encode explicitly 
+
     cat_cols = X.select_dtypes(include=['object']).columns.tolist()
     for col in cat_cols:
         X[col] = X[col].astype('category').cat.codes
-        
+
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     if num_cols:
         X['num_sum'] = X[num_cols].sum(axis=1)
         X['num_mean'] = X[num_cols].mean(axis=1)
         X['num_std'] = X[num_cols].std(axis=1)
-        
+
     return X, y, num_cols
 
-def optimize_threshold_for_focal_business(y_val, preds_proba):
+
+def optimize_threshold(y_val, preds_proba):
     best_t = 0.5
     best_score = -1.0
     for t in np.linspace(0.1, 0.9, 100):
         preds = (preds_proba >= t).astype(int)
         recall_nok = recall_score(y_val, preds, pos_label=1)
-        recall_ok = recall_score(y_val, preds, pos_label=0)
-        f1_w = f1_score(y_val, preds, average='weighted')
-        
         if recall_nok < 0.85:
             continue
-            
+        recall_ok = recall_score(y_val, preds, pos_label=0)
+        f1_w = f1_score(y_val, preds, average='weighted')
         custom_target = f1_w + (recall_ok * 0.20)
         if custom_target > best_score:
             best_score = custom_target
             best_t = t
     return best_t, best_score
 
+
 def cluster_optuna_objective(trial, X_c, y_c):
-    # Si hay muy pocos datos, simplificamos la validación
     folds = 3 if len(y_c) > 300 else 2
     try:
         skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=RANDOM_STATE)
-        
         param = {
             'objective': 'binary:logistic',
             'eval_metric': 'logloss',
@@ -98,154 +97,150 @@ def cluster_optuna_objective(trial, X_c, y_c):
             'random_state': RANDOM_STATE,
             'n_jobs': -1
         }
-        
         scores = []
         for train_idx, val_idx in skf.split(X_c, y_c):
             X_train, y_train = X_c.iloc[train_idx], y_c[train_idx]
             X_val, y_val = X_c.iloc[val_idx], y_c[val_idx]
-            
-            # Si un fold se queda con 1 sola clase, saltamos.
             if len(np.unique(y_train)) < 2:
                 continue
-                
             model = xgb.XGBClassifier(**param, n_estimators=200, early_stopping_rounds=20)
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-            
             preds_proba = model.predict_proba(X_val)[:, 1]
-            
-            # Si por penalizar fallamos, el threshold fallback es 0.5
-            _, best_val_score = optimize_threshold_for_focal_business(y_val, preds_proba)
+            _, best_val_score = optimize_threshold(y_val, preds_proba)
             if best_val_score == -1.0:
-                best_val_score = f1_score(y_val, (preds_proba>0.5).astype(int), average='weighted')
+                best_val_score = f1_score(y_val, (preds_proba > 0.5).astype(int), average='weighted')
             scores.append(best_val_score)
-            
         return np.mean(scores) if scores else 0.0
-    except Exception as e:
+    except Exception:
         return 0.0
 
+
 def main():
-    print("="*60)
-    print(" PASO 3 [VANGUARDIA] - MIXTURE OF EXPERTS (DIVIDE & CONQUER)")
-    print("="*60)
-    
+    print("=" * 60)
+    print(" EXPERIMENTO 04 (DIVIDE & CONQUER GMM) — SIN LEAKAGE")
+    print("=" * 60)
+
     start_time = time.time()
-    
-    print("[1] Cargando datos y Entrenando Segmentación GMM...")
-    X, y, num_cols = load_and_preprocess_data()
-    
-    # 1. Aplicamos GMM (Gaussian Mixture) a las features escaladas
-    # Usamos 3 dominios para no diluir demasiado la clase minoritaria
+
+    print("[1] Cargando datos...")
+    X, y, num_cols = load_raw_data()
+
+    # HOLDOUT SPLIT
+    print("[2] Separando holdout test (20%)...")
+    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
+        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+    )
+    X_pool = X_pool.reset_index(drop=True)
+    X_holdout = X_holdout.reset_index(drop=True)
+    print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    # GMM fitted ONLY on train pool
     N_CLUSTERS = 3
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X[num_cols].fillna(0))
+    X_pool_scaled = scaler.fit_transform(X_pool[num_cols].fillna(0))
     gmm = GaussianMixture(n_components=N_CLUSTERS, covariance_type='tied', random_state=RANDOM_STATE)
-    
-    cluster_labels = gmm.fit_predict(X_scaled)
-    X['Cluster'] = cluster_labels
-    
+    pool_cluster_labels = gmm.fit_predict(X_pool_scaled)
+
+    # Transform holdout with the same scaler+gmm (no refit)
+    X_holdout_scaled = scaler.transform(X_holdout[num_cols].fillna(0))
+    holdout_cluster_labels = gmm.predict(X_holdout_scaled)
+
     for c in range(N_CLUSTERS):
-        sub_y = y[cluster_labels == c]
-        print(f"    - Sub-fábrica (Clúster) {c}: {len(sub_y)} registros (NOK: {np.sum(sub_y==1)}, OK: {np.sum(sub_y==0)})")
-        
-    print("\n[2] Entrenando Expertos Locales vía Optuna...")
-    
+        sub_y = y_pool[pool_cluster_labels == c]
+        print(f"    - Clúster {c}: {len(sub_y)} registros (NOK: {np.sum(sub_y == 1)}, OK: {np.sum(sub_y == 0)})")
+
+    print("\n[3] Entrenando Expertos Locales vía Optuna (sólo train pool)...")
     expert_models = {}
-    best_thresholds = {}
-    
-    # Matriz global out-of-fold para reportar la métrica exacta
-    oof_preds_proba_global = np.zeros(len(y))
-    oof_y_global = np.zeros(len(y))
-    
+    expert_best_params = {}
+    oof_preds_proba_global = np.zeros(len(y_pool))
+
     for c in range(N_CLUSTERS):
-        print(f"    -> Iniciando Experto del Clúster {c}...")
-        
-        idx_c = np.where(cluster_labels == c)[0]
-        X_c = X.iloc[idx_c].drop(columns=['Cluster']).reset_index(drop=True)
-        y_c = y[idx_c]
-        
-        # Si un clúster captura el 100% de NOK o OK y no hay de la otra, el experto predice cte.
+        print(f"    -> Experto Clúster {c}...")
+        idx_c = np.where(pool_cluster_labels == c)[0]
+        X_c = X_pool.iloc[idx_c].reset_index(drop=True)
+        y_c = y_pool[idx_c]
+
         if len(np.unique(y_c)) < 2:
-            print(f"       [!] Clúster puro. Experto devolverá clase: {y_c[0]}")
-            oof_preds_proba_global[idx_c] = y_c[0]
+            print(f"       [!] Clúster puro. Predice clase: {y_c[0]}")
+            oof_preds_proba_global[idx_c] = float(y_c[0])
+            expert_models[c] = None
             continue
-            
+
         study = optuna.create_study(direction='maximize')
         study.optimize(lambda trial: cluster_optuna_objective(trial, X_c, y_c), n_trials=10, n_jobs=1)
-        
+
         best_params = study.best_params
         best_params.update({
-            'objective': 'binary:logistic',
-            'eval_metric': 'logloss',
-            'tree_method': 'hist',
-            'random_state': RANDOM_STATE,
-            'n_estimators': 400
+            'objective': 'binary:logistic', 'eval_metric': 'logloss',
+            'tree_method': 'hist', 'random_state': RANDOM_STATE, 'n_estimators': 400
         })
-        
-        # K-Fold a nivel de Experto para no falsear validación
+        expert_best_params[c] = best_params
+
+        # OOF for this cluster (inner CV within the cluster's train data)
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
         oof_expert_proba = np.zeros(len(y_c))
-        
+
         for train_idx, val_idx in skf.split(X_c, y_c):
             X_train, y_train = X_c.iloc[train_idx], y_c[train_idx]
             X_val, y_val = X_c.iloc[val_idx], y_c[val_idx]
-            
-            # Chequeo seguridad
             if len(np.unique(y_train)) < 2:
-                model = None
                 oof_expert_proba[val_idx] = np.mean(y_train)
             else:
                 model = xgb.XGBClassifier(**best_params, early_stopping_rounds=20)
                 model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
                 oof_expert_proba[val_idx] = model.predict_proba(X_val)[:, 1]
-                
+
         oof_preds_proba_global[idx_c] = oof_expert_proba
-        
-        # Train final master expert for this cluster
+
+        # Train master expert on full cluster data (for holdout prediction)
         master_expert = xgb.XGBClassifier(**best_params)
         master_expert.fit(X_c, y_c, verbose=False)
         expert_models[c] = master_expert
 
-    print("\n[3] Fusión de Multi-Expertos y Meta-Resolución...")
-    
+    # Threshold tuning (OOF train pool only)
+    print("\n[4] Threshold tuning sobre OOF del train pool...")
     best_t_global = 0.5
     best_score_global = -1
-    
     for t in np.linspace(0.1, 0.9, 150):
         preds_t = (oof_preds_proba_global >= t).astype(int)
-        
-        recall_nok = recall_score(y, preds_t, pos_label=1)
-        f1_ok = f1_score(y, preds_t, pos_label=0)
-        f1_w = f1_score(y, preds_t, average='weighted')
-        
+        recall_nok = recall_score(y_pool, preds_t, pos_label=1)
         if recall_nok < 0.85:
             continue
-            
+        f1_ok = f1_score(y_pool, preds_t, pos_label=0)
+        f1_w = f1_score(y_pool, preds_t, average='weighted')
         target_score = f1_w + (f1_ok * 0.5)
         if target_score > best_score_global:
             best_score_global = target_score
             best_t_global = t
-            
-    final_preds = (oof_preds_proba_global >= best_t_global).astype(int)
 
-    print("\n" + "*"*50)
-    print(" RESULTADOS LOGRADOS POR ENSAMBLADOR DIVIDE & CONQUER")
-    print("*"*50)
-    target_names = ['OK (Minotitario)', 'NOK (Mayoritario)']
-    print("\nMatriz de Confusión Global:\n", confusion_matrix(y, final_preds))
-    print("\nReporte de Clasificación:\n", classification_report(y, final_preds, target_names=target_names))
-    
-    print("\n[4] Guardando Meta-Modelo GMM + Híbridos...")
-    model_export = {
-        'gmm': gmm,
-        'scaler': scaler,
-        'experts': expert_models,
-        'threshold': best_t_global,
-        'num_cols': num_cols
-    }
-    joblib.dump(model_export, '../../models/divide_and_conquer_experts.pkl' if os.path.exists('../../models/') else 'models/divide_and_conquer_experts.pkl')
-    
+    print(f"    - Threshold: {best_t_global:.4f}")
+
+    # HOLDOUT evaluation — route through GMM → experts
+    print("\n[5] Evaluación Final sobre HOLDOUT TEST...")
+    holdout_proba = np.zeros(len(y_holdout))
+
+    for c in range(N_CLUSTERS):
+        idx_h = np.where(holdout_cluster_labels == c)[0]
+        if len(idx_h) == 0:
+            continue
+        if expert_models[c] is None:
+            # Pure cluster
+            idx_pool_c = np.where(pool_cluster_labels == c)[0]
+            holdout_proba[idx_h] = float(y_pool[idx_pool_c[0]])
+        else:
+            X_h_c = X_holdout.iloc[idx_h]
+            holdout_proba[idx_h] = expert_models[c].predict_proba(X_h_c)[:, 1]
+
+    holdout_preds = (holdout_proba >= best_t_global).astype(int)
+
+    target_names = ['OK (Minoritario)', 'NOK (Mayoritario)']
+    print("\nMatriz de Confusión (HOLDOUT):\n", confusion_matrix(y_holdout, holdout_preds))
+    print("\nReporte de Clasificación (HOLDOUT):\n",
+          classification_report(y_holdout, holdout_preds, target_names=target_names))
+
     print(f"\nTiempo Total: {time.time() - start_time:.2f}s")
-    print("="*60)
+    print("=" * 60)
+
 
 if __name__ == '__main__':
     main()
