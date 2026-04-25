@@ -2,31 +2,30 @@
 # -*- coding: utf-8 -*-
 
 """
-EXPERIMENTO 10 - EL LÍMITE ABSOLUTO (CleanLab Confident Learning + AutoGluon HPO Stack)
+EXPERIMENTO 10 - CleanLab Confident Learning + Meta-Stack
 ---------------------------------------------------------------------------------------
-Paso 1: CleanLab (MIT) remueve el 100% empírico de Label Noise (solapamiento originado 
-por humanos fallando el etiquetado) para purgar la dimensionalidad ruidosa.
-Paso 2: AutoGluon AutoML (AWS) de nivel HPO entrena, cruza y apila CatBoost, LightGBM, 
-Redes Neuronales, FastAI, y XGBoost optimizando hiperparámetros de manera simultánea 
-hasta llegar al 'Best Quality' State of The Art stack.
+VERSIÓN CORREGIDA — Sin data leakage.
+Cambios:
+  - Holdout test (20%) separado ANTES de CleanLab o cualquier procesamiento.
+  - CleanLab aplicado SÓLO sobre train pool.
+  - is_unbalance=False para CleanLab's LGB (mejor calibración de probas).
+  - Stacker entrenado en train pool limpio, evaluado en holdout test ORIGINAL.
+  - Métricas finales sobre holdout test.
 """
 
 import os
 import time
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import lightgbm as lgb
-
 import warnings
+
 warnings.filterwarnings('ignore')
 
-# 1. Dependencias Críticas Masivas
 try:
     from cleanlab.filter import find_label_issues
-    import optuna
     from catboost import CatBoostClassifier
     from xgboost import XGBClassifier
     from sklearn.ensemble import StackingClassifier
@@ -40,117 +39,121 @@ if not os.path.exists(DATA_PATH):
 
 RANDOM_STATE = 42
 
-def load_and_preprocess_data():
+
+def load_raw_data():
     df = pd.read_excel(DATA_PATH)
     target_col = 'Variable de Salida'
     df = df.dropna(subset=[target_col])
-    
+    df = df.reset_index(drop=True)
+
     cat_cols = df.select_dtypes(include=['object']).columns.tolist()
     if target_col in cat_cols:
         cat_cols.remove(target_col)
-        
     for col in cat_cols:
         df[col] = df[col].astype('category').cat.codes
-        
+
     df[target_col] = df[target_col].map({'NOK': 1, 'OK': 0})
     return df, target_col
 
-def extract_label_issues_with_cleanlab(df, target_col):
+
+def cleanlab_on_train_only(X_train, y_train):
     """
-    Confident Learning: Detectar qué filas son etiquetados basura usando LightGBM + CV probas.
+    Confident Learning applied ONLY to training data.
+    Uses default LGB (no is_unbalance) for better calibrated probabilities.
     """
-    print("\n[1] CONFIDENT LEARNING: Auditando Solapamiento Humano (Label Noise)...")
-    X = df.drop(columns=[target_col]).fillna(0).values
-    y = df[target_col].values
-    
+    print("\n[!] CleanLab: Auditando sólo train pool...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    cv_pred_probs = np.zeros((len(y), 2))
-    
-    for train_idx, val_idx in skf.split(X, y):
-        X_train, y_train = X[train_idx], y[train_idx]
-        X_val, y_val = X[val_idx], y[val_idx]
-        
-        # Un modelo rapido de arbol es perfecto para dar la prob inicial a cleanlab
-        model = lgb.LGBMClassifier(random_state=RANDOM_STATE, is_unbalance=True, verbosity=-1)
-        model.fit(X_train, y_train)
-        
-        preds = model.predict_proba(X_val)
-        cv_pred_probs[val_idx] = preds
-        
-    # CleanLab entra en accion:
+    cv_pred_probs = np.zeros((len(y_train), 2))
+
+    for train_idx, val_idx in skf.split(X_train, y_train):
+        Xt, yt = X_train[train_idx], y_train[train_idx]
+        Xv, yv = X_train[val_idx], y_train[val_idx]
+
+        # FIX: no is_unbalance for better calibration for CleanLab
+        model = lgb.LGBMClassifier(random_state=RANDOM_STATE, verbosity=-1)
+        model.fit(Xt, yt)
+        cv_pred_probs[val_idx] = model.predict_proba(Xv)
+
     ranked_label_issues = find_label_issues(
-        labels=y,
+        labels=y_train,
         pred_probs=cv_pred_probs,
         return_indices_ranked_by='self_confidence',
     )
-    
-    print(f"    - CleanLab ha detectado matemáticamente {len(ranked_label_issues)} registros como 'Typos' o Etiquetas Corruptas.")
-    
-    # Purgamos la basura para que Autogluon no se intoxique
-    drop_indices = ranked_label_issues
-    df_clean = df.drop(index=df.index[drop_indices])
-    print(f"    - Dataset original: {len(df)} filas.")
-    print(f"    - Dataset SANEADO (CleanLab): {len(df_clean)} filas.\n")
-    
-    return df_clean, drop_indices
 
-def run_optuna_stack_monolith(df_clean, target_col):
-    """
-    STACK AUTO-ML MANUAL: Dado que limitamos librerías gigantes, construimos
-    un Meta-Ensemble masivo: Nivel 1 (XGBoost + CatBoost) -> Nivel 2 (LightGBM Meta).
-    """
-    print("[2] OPTUNA + STACKING: Entrenando el SOTA HPO Ensemble sobre Datos Sanos...")
-    
-    from sklearn.model_selection import train_test_split
-    train_data, test_data = train_test_split(df_clean, test_size=0.15, stratify=df_clean[target_col], random_state=RANDOM_STATE)
-    
-    X_train = train_data.drop(columns=[target_col]).values
-    y_train = train_data[target_col].values
-    X_test = test_data.drop(columns=[target_col]).values
-    y_test = test_data[target_col].values
+    print(f"    - CleanLab detectó {len(ranked_label_issues)} etiquetas problemáticas.")
 
-    print("\n   [!] Entrenando Capa 1: CatBoost Hyper-Muting...")
-    cb = CatBoostClassifier(iterations=600, depth=6, learning_rate=0.03, l2_leaf_reg=3, loss_function='Logloss', verbose=0, random_state=RANDOM_STATE)
-    
-    print("   [!] Entrenando Capa 1: XGBoost Hyper-Muting...")
-    xgb = XGBClassifier(n_estimators=400, max_depth=5, learning_rate=0.03, subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE, n_jobs=-1)
-    
-    print("   [!] Entrenando Capa 2 (Meta): LightGBM Resolutivo...")
-    meta = lgb.LGBMClassifier(n_estimators=200, num_leaves=31, learning_rate=0.01, random_state=RANDOM_STATE, verbosity=-1)
-    
+    # Remove problematic indices from training data
+    clean_mask = np.ones(len(y_train), dtype=bool)
+    clean_mask[ranked_label_issues] = False
+
+    X_clean = X_train[clean_mask]
+    y_clean = y_train[clean_mask]
+    print(f"    - Train original: {len(y_train)} → Train limpio: {len(y_clean)}")
+
+    return X_clean, y_clean
+
+
+def main():
+    start_time = time.time()
+    print("=" * 60)
+    print(" EXPERIMENTO 10 (CLEANLAB + META-STACK) — SIN LEAKAGE")
+    print("=" * 60)
+
+    print("[1] Cargando datos...")
+    df, target_col = load_raw_data()
+
+    X = df.drop(columns=[target_col]).fillna(0).values
+    y = df[target_col].values
+
+    # HOLDOUT SPLIT — BEFORE CleanLab
+    print("[2] Separando holdout test (20%) ANTES de CleanLab...")
+    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
+        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+    )
+    print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    # CleanLab on train pool ONLY
+    X_clean, y_clean = cleanlab_on_train_only(X_pool, y_pool)
+
+    # Stack ensemble trained on CLEANED train, evaluated on ORIGINAL holdout
+    print("\n[3] Entrenando Meta-Stack sobre datos limpios...")
+    cb = CatBoostClassifier(
+        iterations=600, depth=6, learning_rate=0.03, l2_leaf_reg=3,
+        loss_function='Logloss', verbose=0, random_state=RANDOM_STATE
+    )
+    xgb_model = XGBClassifier(
+        n_estimators=400, max_depth=5, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.8, random_state=RANDOM_STATE, n_jobs=-1
+    )
+    meta = lgb.LGBMClassifier(
+        n_estimators=200, num_leaves=31, learning_rate=0.01,
+        random_state=RANDOM_STATE, verbosity=-1
+    )
+
     stacker = StackingClassifier(
-        estimators=[('cb', cb), ('xgb', xgb)],
+        estimators=[('cb', cb), ('xgb', xgb_model)],
         final_estimator=meta,
         cv=5,
         n_jobs=-1
     )
-    
-    stacker.fit(X_train, y_train)
-    
-    print("\n[3] EVALUACIÓN DEL LÍMITE ABSOLUTO (Sobre Validation Clean Test)...\n")
-    preds = stacker.predict(X_test)
-    
-    print("\n" + "*"*50)
-    print(" RESULTADOS FINALES: CLEANLAB + ADVANCED STACK")
-    print("*"*50)
-    
-    print("\nMatriz de Confusión:\n", confusion_matrix(y_test, preds))
-    print("\nReporte de Clasificación:\n", classification_report(y_test, preds, target_names=['OK (Min)','NOK (May)']))
-    print("="*60)
 
-def main():
-    start_time = time.time()
-    print("="*60)
-    print(" EXPERIMENTO 10 - SANEAMIENTO MIT + ADVANCED META-STACK")
-    print("="*60)
-    
-    df, target_col = load_and_preprocess_data()
-    df_clean, drop_idx = extract_label_issues_with_cleanlab(df, target_col)
-    
-    run_optuna_stack_monolith(df_clean, target_col)
-    
-    print(f"\nTiempo Total Pipeline: {time.time() - start_time:.2f}s")
-    print("="*60)
+    stacker.fit(X_clean, y_clean)
+
+    # HOLDOUT evaluation (original, un-cleaned holdout)
+    print("\n[4] Evaluación Final sobre HOLDOUT TEST (datos originales)...")
+    preds = stacker.predict(X_holdout)
+
+    print("\n" + "*" * 50)
+    print(" RESULTADOS FINALES: CLEANLAB + ADVANCED STACK")
+    print("*" * 50)
+
+    print("\nMatriz de Confusión (HOLDOUT):\n", confusion_matrix(y_holdout, preds))
+    print("\nReporte de Clasificación (HOLDOUT):\n",
+          classification_report(y_holdout, preds, target_names=['OK (Min)', 'NOK (May)']))
+
+    print(f"\nTiempo Total: {time.time() - start_time:.2f}s")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
