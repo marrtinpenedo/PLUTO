@@ -6,41 +6,32 @@ EXPERIMENTO 05 - VAE + Discretization + CatBoost
 --------------------------------------------------------------------
 VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
-  - Holdout test (20%) separado ANTES de cualquier procesamiento.
-  - KBinsDiscretizer fitted PER-FOLD (fit en fold-train, transform fold-val).
-  - Variance-based feature selection computed PER-FOLD.
-  - VAE trained PER-FOLD (fit en fold-train, encode fold-train + fold-val).
-  - Optuna on train pool only.
-  - Threshold tuning sólo sobre OOF del train pool.
-  - Métricas finales sobre holdout test.
+  - Holdout test separado antes de cualquier transformación.
+  - OrdinalEncoder aplicado post-split para evitar fugas.
+  - VAE y Binning ajustados únicamente con datos de entrenamiento de cada fold.
 """
 
 import os
 import time
 import numpy as np
 import pandas as pd
-import optuna
-from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
-from sklearn.preprocessing import StandardScaler, KBinsDiscretizer
-import catboost as cb
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
+from sklearn.preprocessing import StandardScaler, KBinsDiscretizer, OrdinalEncoder
+import catboost as cb
 import warnings
 
 warnings.filterwarnings('ignore')
-optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 RANDOM_STATE = 42
 DATA_PATH = '../../data/raw/Dataset_01_Anonimizado.xlsx'
-if not os.path.exists(DATA_PATH):
-    DATA_PATH = 'data/raw/Dataset_01_Anonimizado.xlsx'
-
 
 # -------------------------------------------------------------
-# VAE Architecture
+# VAE Architecture (Mantenida igual, es robusta)
 # -------------------------------------------------------------
 class VAE(nn.Module):
     def __init__(self, input_dim, hidden_dim=64, latent_dim=16):
@@ -75,134 +66,101 @@ class VAE(nn.Module):
         x_recon = self.decode(z)
         return x_recon, mu, logvar
 
-
 def vae_loss_function(x_recon, x, mu, logvar):
+    # Pérdida: MSE (Reconstrucción) + KLD (Divergencia KL)
     MSE = nn.functional.mse_loss(x_recon, x, reduction='sum')
     KLD = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return MSE + 0.1 * KLD
 
-
 def train_vae_and_encode(X_train_scaled, X_val_scaled, latent_dim=12, epochs=15):
-    """Train VAE on X_train_scaled ONLY, then encode both train and val."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    input_dim = X_train_scaled.shape[1]
-
-    vae = VAE(input_dim=input_dim, hidden_dim=64, latent_dim=latent_dim).to(device)
+    vae = VAE(input_dim=X_train_scaled.shape[1], latent_dim=latent_dim).to(device)
     optimizer = optim.Adam(vae.parameters(), lr=1e-3)
-
     train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
     loader = DataLoader(TensorDataset(train_tensor), batch_size=64, shuffle=True)
 
     vae.train()
-    for epoch in range(epochs):
+    for _ in range(epochs):
         for batch in loader:
             batch_data = batch[0].to(device)
             optimizer.zero_grad()
-            recon_batch, mu, logvar = vae(batch_data)
-            loss = vae_loss_function(recon_batch, batch_data, mu, logvar)
+            recon, mu, logvar = vae(batch_data)
+            loss = vae_loss_function(recon, batch_data, mu, logvar)
             loss.backward()
             optimizer.step()
 
-    # Encode both splits using fold-specific VAE
     vae.eval()
-    results = {}
-    for name, data in [('train', X_train_scaled), ('val', X_val_scaled)]:
-        tensor = torch.tensor(data, dtype=torch.float32).to(device)
+    def get_latents(data_np):
+        tensor = torch.tensor(data_np, dtype=torch.float32).to(device)
         with torch.no_grad():
-            recon, mu, logvar = vae(tensor)
-            recon_error = torch.mean((tensor - recon) ** 2, dim=1).cpu().numpy()
-            latent_mu = mu.cpu().numpy()
-        results[name] = (recon_error, latent_mu)
+            recon, mu, _ = vae(tensor)
+            err = torch.mean((tensor - recon)**2, dim=1).cpu().numpy()
+            lat = mu.cpu().numpy()
+        return err, lat
 
-    return results['train'], results['val']
-
+    tr_err, tr_lat = get_latents(X_train_scaled)
+    vl_err, vl_lat = get_latents(X_val_scaled)
+    return (tr_err, tr_lat), (vl_err, vl_lat)
 
 # -------------------------------------------------------------
-# Pipeline helpers
+# Pipeline Helpers
 # -------------------------------------------------------------
 def load_raw_data():
     df = pd.read_excel(DATA_PATH)
     target_col = 'Variable de Salida'
     df = df.dropna(subset=[target_col])
     df = df.reset_index(drop=True)
-
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
     y = df['target'].values
-    X = df.drop(columns=[target_col, 'target'])
+    X = df.drop(columns=[target_col, 'target', 'ID', 'Variable 02'], errors='ignore')
+    return X, y
 
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+def apply_fe_per_fold(X_train_raw, X_val_raw, y_train):
+    X_tr = X_train_raw.copy()
+    X_vl = X_val_raw.copy()
+    
+    num_cols = X_tr.select_dtypes(exclude=['object']).columns.tolist()
+    cat_cols = X_tr.select_dtypes(include=['object']).columns.tolist()
 
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
+    # 1. Imputación y Encoding seguro
+    X_tr[num_cols] = X_tr[num_cols].fillna(0)
+    X_vl[num_cols] = X_vl[num_cols].fillna(0)
+    
+    current_cat_features = []
+    if cat_cols:
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_tr[cat_cols] = oe.fit_transform(X_tr[cat_cols].fillna('missing').astype(str))
+        X_vl[cat_cols] = oe.transform(X_vl[cat_cols].fillna('missing').astype(str))
+        current_cat_features.extend(cat_cols)
 
-    return X, y, cat_cols, num_cols
+    # 2. Binning de variables de alta varianza (Solo sobre Train)
+    variances = X_tr[num_cols].var().sort_values(ascending=False)
+    high_var = variances.head(10).index.tolist()
+    
+    kbd = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile')
+    X_tr_bin = kbd.fit_transform(X_tr[high_var])
+    X_vl_bin = kbd.transform(X_vl[high_var])
+    
+    for i, col in enumerate(high_var):
+        name = f"{col}_bin"
+        X_tr[name] = X_tr_bin[:, i].astype(int)
+        X_vl[name] = X_vl_bin[:, i].astype(int)
+        current_cat_features.append(name)
 
-
-def apply_fe_per_fold(X_train, X_val, num_cols, cat_cols_base):
-    """
-    Per-fold FE: binning, VAE features — all fitted on train only.
-    Returns augmented DataFrames and updated cat_cols list.
-    """
-    X_train = X_train.copy()
-    X_val = X_val.copy()
-
-    # Variance-based selection on TRAIN only
-    variances = X_train[num_cols].var().sort_values(ascending=False)
-    high_var_cols = variances.head(20).index.tolist()
-
-    # KBinsDiscretizer fitted on TRAIN only
-    est = KBinsDiscretizer(n_bins=4, encode='ordinal', strategy='quantile')
-    X_train_binned = est.fit_transform(X_train[high_var_cols].fillna(0))
-    X_val_binned = est.transform(X_val[high_var_cols].fillna(0))
-
-    new_cat_cols = list(cat_cols_base)
-    for i, col in enumerate(high_var_cols):
-        bname = f'{col}_binned'
-        X_train[bname] = X_train_binned[:, i].astype(int)
-        X_val[bname] = X_val_binned[:, i].astype(int)
-        new_cat_cols.append(bname)
-
-    # StandardScaler on num_cols fitted on TRAIN only
+    # 3. VAE Features
     scaler = StandardScaler()
-    X_tr_num_scaled = scaler.fit_transform(X_train[num_cols].fillna(0))
-    X_vl_num_scaled = scaler.transform(X_val[num_cols].fillna(0))
+    X_tr_sc = scaler.fit_transform(X_tr[num_cols])
+    X_vl_sc = scaler.transform(X_vl[num_cols])
+    
+    (tr_err, tr_lat), (vl_err, vl_lat) = train_vae_and_encode(X_tr_sc, X_vl_sc)
+    
+    X_tr['vae_err'] = tr_err
+    X_vl['vae_err'] = vl_err
+    for i in range(tr_lat.shape[1]):
+        X_tr[f'vae_l{i}'] = tr_lat[:, i]
+        X_vl[f'vae_l{i}'] = vl_lat[:, i]
 
-    # VAE trained on TRAIN only
-    (tr_recon_err, tr_latent), (vl_recon_err, vl_latent) = train_vae_and_encode(
-        X_tr_num_scaled, X_vl_num_scaled, latent_dim=12, epochs=15
-    )
-
-    X_train['vae_recon_error'] = tr_recon_err
-    X_val['vae_recon_error'] = vl_recon_err
-    for i in range(tr_latent.shape[1]):
-        X_train[f'vae_latent_{i}'] = tr_latent[:, i]
-        X_val[f'vae_latent_{i}'] = vl_latent[:, i]
-
-    # Convert cat cols to int for CatBoost
-    for c in new_cat_cols:
-        X_train[c] = X_train[c].astype(int)
-        X_val[c] = X_val[c].astype(int)
-
-    return X_train, X_val, new_cat_cols
-
-
-def maximize_threshold(y_val, preds_proba):
-    best_t = 0.5
-    best_target = -1.0
-    for t in np.linspace(0.1, 0.9, 100):
-        preds = (preds_proba >= t).astype(int)
-        r_nok = recall_score(y_val, preds, pos_label=1)
-        if r_nok < 0.85:
-            continue
-        r_ok = recall_score(y_val, preds, pos_label=0)
-        f1_w = f1_score(y_val, preds, average='weighted')
-        score = f1_w + (r_ok * 0.25)
-        if score > best_target:
-            best_target = score
-            best_t = t
-    return best_t, best_target
-
+    return X_tr, X_vl, current_cat_features
 
 def main():
     print("=" * 60)
@@ -210,72 +168,52 @@ def main():
     print("=" * 60)
     start_time = time.time()
 
-    print("[1] Cargando datos...")
-    X, y, cat_cols, num_cols = load_raw_data()
+    X_df, y = load_raw_data()
 
     # HOLDOUT SPLIT
-    print("[2] Separando holdout test (20%)...")
     X_pool, X_holdout, y_pool, y_holdout = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+        X_df, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
-    X_pool = X_pool.reset_index(drop=True)
-    X_holdout = X_holdout.reset_index(drop=True)
-    print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
 
-    # 5-Fold CV on train pool (VAE + FE per fold)
-    print("\n[3] 5-Fold CV con VAE + FE per-fold...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
     oof_proba = np.zeros(len(y_pool))
 
-    # CatBoost params (fixed reasonable defaults — Optuna removed to keep manageable runtime
-    # since VAE training per fold is already expensive)
     cb_params = {
-        'loss_function': 'Logloss',
-        'eval_metric': 'Logloss',
-        'iterations': 600,
-        'depth': 6,
-        'learning_rate': 0.05,
-        'l2_leaf_reg': 3.0,
-        'random_strength': 1.0,
-        'verbose': False,
-        'thread_count': -1,
-        'random_seed': RANDOM_STATE
+        'iterations': 500, 'depth': 6, 'learning_rate': 0.05, 
+        'verbose': False, 'random_seed': RANDOM_STATE
     }
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X_pool, y_pool)):
-        X_tr_raw, y_tr = X_pool.iloc[train_idx], y_pool[train_idx]
-        X_vl_raw, y_vl = X_pool.iloc[val_idx], y_pool[val_idx]
-
-        # All FE per-fold (bins, VAE, scaler — all fitted on train only)
-        X_tr, X_vl, fold_cat_cols = apply_fe_per_fold(X_tr_raw, X_vl_raw, num_cols, cat_cols)
-
-        model = cb.CatBoostClassifier(**cb_params, cat_features=fold_cat_cols)
-        model.fit(X_tr, y_tr, eval_set=(X_vl, y_vl), early_stopping_rounds=40, verbose=False)
-        oof_proba[val_idx] = model.predict_proba(X_vl)[:, 1]
+    for fold, (tr_idx, vl_idx) in enumerate(skf.split(X_pool, y_pool)):
+        X_tr_fold, X_vl_fold, _ = apply_fe_per_fold(X_pool.iloc[tr_idx], X_pool.iloc[vl_idx], y_pool[tr_idx])
+        
+        model = cb.CatBoostClassifier(**cb_params)
+        model.fit(X_tr_fold, y_pool[tr_idx], eval_set=(X_vl_fold, y_pool[vl_idx]), early_stopping_rounds=30)
+        oof_proba[vl_idx] = model.predict_proba(X_vl_fold)[:, 1]
         print(f"    - Fold {fold + 1}/5 listo.")
 
-    # Threshold tuning on OOF (train pool only)
-    print("\n[4] Threshold tuning sobre OOF del train pool...")
-    best_threshold, _ = maximize_threshold(y_pool, oof_proba)
-    print(f"    - Threshold: {best_threshold:.4f}")
+    # Tuning e Holdout
+    best_t = 0.5
+    best_f1 = -1
+    for t in np.linspace(0.1, 0.9, 100):
+        p = (oof_proba >= t).astype(int)
+        if recall_score(y_pool, p) < 0.85: continue
+        score = f1_score(y_pool, p, average='weighted')
+        if score > best_f1: best_f1, best_t = score, t
 
-    # HOLDOUT evaluation
-    print("\n[5] Evaluación Final sobre HOLDOUT TEST...")
-    X_pool_fe, X_holdout_fe, final_cat_cols = apply_fe_per_fold(X_pool, X_holdout, num_cols, cat_cols)
+    print(f"\n[4] Threshold: {best_t:.4f}")
 
-    final_model = cb.CatBoostClassifier(**cb_params, cat_features=final_cat_cols)
-    final_model.fit(X_pool_fe, y_pool, verbose=False)
+    # Evaluación Final
+    X_p_fe, X_h_fe, _ = apply_fe_per_fold(X_pool, X_holdout, y_pool)
+    
+    final_model = cb.CatBoostClassifier(**cb_params)
+    final_model.fit(X_p_fe, y_pool)
+    
+    h_proba = final_model.predict_proba(X_h_fe)[:, 1]
+    h_preds = (h_proba >= best_t).astype(int)
 
-    holdout_proba = final_model.predict_proba(X_holdout_fe)[:, 1]
-    holdout_preds = (holdout_proba >= best_threshold).astype(int)
-
-    print("\nMatriz de Confusión (HOLDOUT):\n", confusion_matrix(y_holdout, holdout_preds))
-    print("\nReporte de Clasificación (HOLDOUT):\n",
-          classification_report(y_holdout, holdout_preds, target_names=['OK (Min)', 'NOK (May)']))
-
-    print(f"Tiempo Total: {time.time() - start_time:.2f}s")
-    print("=" * 60)
-
+    print("\nMatriz de Confusión (HOLDOUT):\n", confusion_matrix(y_holdout, h_preds))
+    print("\nReporte:\n", classification_report(y_holdout, h_preds))
+    print(f"Tiempo: {time.time() - start_time:.2f}s")
 
 if __name__ == "__main__":
     main()

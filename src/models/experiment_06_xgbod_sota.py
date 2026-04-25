@@ -7,6 +7,7 @@ EXPERIMENTO 06 - XGBOD (State-of-the-Art Outlier Detection)
 VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
+  - OrdinalEncoding e Imputación realizados POST-SPLIT de forma segura.
   - StandardScaler DENTRO del CV loop (fit fold-train, transform fold-val).
   - Threshold tuning sólo sobre OOF del train pool.
   - Métricas finales sobre holdout test.
@@ -18,8 +19,8 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 from pyod.models.xgbod import XGBOD
-from sklearn.preprocessing import StandardScaler
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -56,15 +57,14 @@ def load_raw_data():
 
     # XGBOD: OK=1 (outlier/minority), NOK=0 (inlier/majority) for PyOD internals
     df['target'] = df[target_col].map({'NOK': 0, 'OK': 1})
+    df = df.drop(columns=[target_col])
+    df = df.drop(columns=['ID','Variable 02'], errors='ignore')
+    
     y = df['target'].values
-    X = df.drop(columns=[target_col, 'target'])
+    # CORRECCIÓN: Devolvemos el DataFrame crudo, sin transformar
+    X = df.drop(columns=['target'])
 
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
-
-    X = X.fillna(0)
-    return X.values, y
+    return X, y
 
 
 def main():
@@ -74,14 +74,34 @@ def main():
     start_time = time.time()
 
     print("[1] Cargando datos...")
-    X, y_pyod = load_raw_data()
+    X_df, y_pyod = load_raw_data()
+    
+    cat_cols = X_df.select_dtypes(include=['object', 'category']).columns.tolist()
+    num_cols = X_df.select_dtypes(exclude=['object', 'category']).columns.tolist()
 
-    # HOLDOUT SPLIT
-    print("[2] Separando holdout test (20%)...")
-    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
-        X, y_pyod, test_size=0.20, stratify=y_pyod, random_state=RANDOM_STATE
+    # HOLDOUT SPLIT (Sobre los datos crudos)
+    print("[2] Separando holdout test (20%) ANTES de preprocesar...")
+    X_pool_df, X_holdout_df, y_pool, y_holdout = train_test_split(
+        X_df, y_pyod, test_size=0.20, stratify=y_pyod, random_state=RANDOM_STATE
     )
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    # CORRECCIÓN: Preprocesamiento de categorías y nulos POST-SPLIT
+    print("\n[2.5] Aplicando Imputación y Codificación Ordinal Segura...")
+    X_pool_df[num_cols] = X_pool_df[num_cols].fillna(0)
+    X_holdout_df[num_cols] = X_holdout_df[num_cols].fillna(0)
+
+    if len(cat_cols) > 0:
+        X_pool_df[cat_cols] = X_pool_df[cat_cols].fillna('missing')
+        X_holdout_df[cat_cols] = X_holdout_df[cat_cols].fillna('missing')
+        
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_pool_df[cat_cols] = oe.fit_transform(X_pool_df[cat_cols])
+        X_holdout_df[cat_cols] = oe.transform(X_holdout_df[cat_cols])
+        
+    # Convertimos a arrays de NumPy para el resto del código
+    X_pool = X_pool_df.values
+    X_holdout = X_holdout_df.values
 
     # 5-Fold CV on train pool with per-fold scaling
     print("\n[3] 5-Fold CV con XGBOD (scaler per-fold)...")
@@ -92,7 +112,7 @@ def main():
         X_train_raw, y_train = X_pool[train_idx], y_pool[train_idx]
         X_val_raw, y_val = X_pool[val_idx], y_pool[val_idx]
 
-        # FIX: scaler per-fold
+        # Scaler per-fold (Correcto)
         scaler = StandardScaler()
         X_train = scaler.fit_transform(X_train_raw)
         X_val = scaler.transform(X_val_raw)
@@ -108,10 +128,8 @@ def main():
         print(f"    - Fold {fold + 1} completado.")
 
     # Remap to business convention: OK=0, NOK=1
-    # In XGBOD: pred_proba[:,1] = P(OK=1=outlier)
-    # Business NOK probability = 1 - P(OK)
     business_nok_proba = 1.0 - oof_proba
-    y_business_pool = np.where(y_pool == 1, 0, 1)  # revert to OK=0, NOK=1
+    y_business_pool = np.where(y_pool == 1, 0, 1)  
 
     # Threshold tuning on OOF (train pool only)
     print("\n[4] Threshold tuning sobre OOF del train pool...")

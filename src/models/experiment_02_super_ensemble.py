@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+
+
 # -*- coding: utf-8 -*-
 
 """
@@ -13,6 +15,7 @@ Cambios:
   - Métricas finales reportadas ÚNICAMENTE sobre holdout test.
 """
 
+
 import os
 import time
 import pandas as pd
@@ -22,7 +25,7 @@ import optuna
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder # Añadido OrdinalEncoder
 import joblib
 import warnings
 
@@ -33,11 +36,6 @@ RANDOM_STATE = 42
 DATA_PATH = '../../data/raw/Dataset_01_Anonimizado.xlsx'
 MODEL_SAVE_PATH = '../../models/xgboost_super_optimized.pkl'
 
-if not os.path.exists(DATA_PATH):
-    DATA_PATH = 'data/raw/Dataset_01_Anonimizado.xlsx'
-    MODEL_SAVE_PATH = 'models/xgboost_super_optimized.pkl'
-
-
 def load_raw_data():
     df = pd.read_excel(DATA_PATH)
     target_col = 'Variable de Salida'
@@ -45,51 +43,42 @@ def load_raw_data():
     df = df.reset_index(drop=True)
 
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
-    df = df.drop(columns=[target_col])
-
     y = df['target'].values
-    X = df.drop(columns=['target'])
+    X = df.drop(columns=[target_col, 'target', 'ID', 'Variable 02'], errors='ignore')
 
-    # Label encode categoricals
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
-
+    # CORRECCIÓN: No codificamos aquí. Devolvemos crudo para el OrdinalEncoder post-split.
     return X, y
 
-
-def apply_fe_per_fold(X_train, X_val, num_cols):
+def apply_fe_per_fold(X_train_raw, X_val_raw, num_cols, cat_cols):
     """
     Feature engineering per-fold:
-    - Row-level stats (no leakage — computed per sample)
-    - KMeans clustering: fitted on X_train only, predict on X_val
+    - Encoding, Scaling y KMeans aprenden SOLO de X_train.
     """
-    X_train = X_train.copy()
-    X_val = X_val.copy()
+    X_train = X_train_raw.copy()
+    X_val = X_val_raw.copy()
 
-    # Row-level aggregations
+    # 1. Encoding Categórico Post-Split
+    if cat_cols:
+        encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_train[cat_cols] = encoder.fit_transform(X_train[cat_cols].fillna('missing'))
+        X_val[cat_cols] = encoder.transform(X_val[cat_cols].fillna('missing'))
+
+    # 2. Row-level aggregations (Sin leakage por definición)
     if num_cols:
         for df in [X_train, X_val]:
             df['num_sum'] = df[num_cols].sum(axis=1)
             df['num_mean'] = df[num_cols].mean(axis=1)
             df['num_std'] = df[num_cols].std(axis=1)
 
-    # KMeans: fit on train, predict on val
+    # 3. KMeans: Fit en train, predict en val
     if num_cols:
         scaler = StandardScaler()
         X_tr_scaled = scaler.fit_transform(X_train[num_cols].fillna(0))
         X_vl_scaled = scaler.transform(X_val[num_cols].fillna(0))
 
         kmeans = KMeans(n_clusters=6, random_state=RANDOM_STATE, n_init=5)
-        kmeans.fit(X_tr_scaled)
-
-        tr_clusters = kmeans.predict(X_tr_scaled)
-        vl_clusters = kmeans.predict(X_vl_scaled)
-
-        # One-hot clusters
-        for c_id in range(6):
-            X_train[f'cluster_{c_id}'] = (tr_clusters == c_id).astype(int)
-            X_val[f'cluster_{c_id}'] = (vl_clusters == c_id).astype(int)
+        X_train['cluster_id'] = kmeans.fit_predict(X_tr_scaled)
+        X_val['cluster_id'] = kmeans.predict(X_vl_scaled)
 
     return X_train, X_val
 
@@ -111,7 +100,7 @@ def optimize_threshold(y_val, preds_proba):
     return best_t, best_score
 
 
-def optuna_objective(trial, X_pool, y_pool, num_cols):
+def optuna_objective(trial, X_pool, y_pool, num_cols, cat_cols):
     """Optuna inner CV — runs ONLY on the train pool."""
     skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE)
 
@@ -137,7 +126,7 @@ def optuna_objective(trial, X_pool, y_pool, num_cols):
         X_vl_raw, y_vl = X_pool.iloc[val_idx], y_pool[val_idx]
 
         # FE per-fold inside Optuna
-        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, num_cols)
+        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, num_cols, cat_cols)
 
         model = xgb.XGBClassifier(**param, n_estimators=600, early_stopping_rounds=40)
         model.fit(X_tr, y_tr, eval_set=[(X_vl, y_vl)], verbose=False)
@@ -170,11 +159,12 @@ def main():
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
 
     num_cols = X_pool.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = X_pool.select_dtypes(include=['object']).columns.tolist()
 
     # 3. Optuna HPO (inner CV on train pool only)
     print("\n[3] Optuna HPO (3-Fold CV sobre train pool)...")
     study = optuna.create_study(direction='maximize')
-    study.optimize(lambda trial: optuna_objective(trial, X_pool, y_pool, num_cols),
+    study.optimize(lambda trial: optuna_objective(trial, X_pool, y_pool, num_cols, cat_cols),
                    n_trials=25, n_jobs=1)
     print(f"    [OK] Mejor Trial Score: {study.best_value:.4f}")
     best_params = study.best_params
@@ -198,7 +188,7 @@ def main():
         X_tr_raw, y_tr = X_pool.iloc[train_idx], y_pool[train_idx]
         X_vl_raw, y_vl = X_pool.iloc[val_idx], y_pool[val_idx]
 
-        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, num_cols)
+        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, num_cols, cat_cols)
 
         model = xgb.XGBClassifier(**final_params, early_stopping_rounds=60)
         model.fit(X_tr, y_tr, eval_set=[(X_vl, y_vl)], verbose=False)
@@ -224,7 +214,7 @@ def main():
 
     # 6. HOLDOUT evaluation
     print("\n[6] Evaluación Final sobre HOLDOUT TEST...")
-    X_pool_fe, X_holdout_fe = apply_fe_per_fold(X_pool, X_holdout, num_cols)
+    X_pool_fe, X_holdout_fe = apply_fe_per_fold(X_pool, X_holdout, num_cols, cat_cols)
 
     master_model = xgb.XGBClassifier(**final_params)
     master_model.fit(X_pool_fe, y_pool, verbose=False)

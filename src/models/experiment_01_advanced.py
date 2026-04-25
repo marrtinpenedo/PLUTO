@@ -45,7 +45,7 @@ def load_raw_data():
 
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
     df = df.drop(columns=[target_col])
-
+    df = df.drop(columns=['ID','Variable 02'])
     y = df['target'].values
     X = df.drop(columns=['target'])
     return X, y
@@ -53,16 +53,20 @@ def load_raw_data():
 
 def apply_feature_engineering(X_train, X_val, cat_cols, num_cols):
     """
-    Aplica FE per-fold: las estadísticas de fila se calculan sobre las mismas 
-    columnas, sin leakage. Convierte categorías a tipo 'category'.
+    Aplica FE per-fold sin leakage y SIN desincronizar las categorías.
     """
     X_train = X_train.copy()
     X_val = X_val.copy()
 
+    # 1. Sincronización estricta de variables categóricas
     for col in cat_cols:
+        # Train crea el diccionario base
         X_train[col] = X_train[col].astype('category')
-        X_val[col] = X_val[col].astype('category')
+        
+        # Val/Holdout adopta EXACTAMENTE las mismas categorías que Train
+        X_val[col] = pd.Categorical(X_val[col], categories=X_train[col].cat.categories)
 
+    # 2. Feature Engineering por fila (Totalmente seguro contra leakage)
     if num_cols:
         X_train['num_sum'] = X_train[num_cols].sum(axis=1)
         X_train['num_mean'] = X_train[num_cols].mean(axis=1)

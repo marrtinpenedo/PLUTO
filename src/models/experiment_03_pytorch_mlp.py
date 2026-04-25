@@ -7,10 +7,9 @@ EXPERIMENTO 03 - Red Neuronal Residual con Focal Loss (PyTorch)
 VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
+  - OrdinalEncoder e Imputación post-split para evitar fugas.
   - StandardScaler DENTRO del CV loop (fit en fold-train, transform fold-val).
-  - Threshold tuning sólo sobre OOF del train pool.
-  - Métricas finales reportadas ÚNICAMENTE sobre holdout test.
-  - set_seed incluye cudnn.deterministic.
+  - Feature Engineering (num_sum, etc.) aplicado post-encoding.
 """
 
 import os
@@ -23,7 +22,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -109,23 +108,31 @@ def load_raw_data():
     df = df.reset_index(drop=True)
 
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
-    df = df.drop(columns=[target_col])
-
     y = df['target'].values
-    X = df.drop(columns=['target'])
+    X = df.drop(columns=[target_col, 'target', 'ID', 'Variable 02'], errors='ignore')
+    return X, y
 
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
 
-    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    if num_cols:
-        X['num_sum'] = X[num_cols].sum(axis=1)
-        X['num_mean'] = X[num_cols].mean(axis=1)
-        X['num_std'] = X[num_cols].std(axis=1)
-
-    X = X.fillna(0)
-    return X.values, y
+def preprocess_step(X_train_df, X_val_df, cat_cols, num_cols):
+    X_tr = X_train_df.copy()
+    X_vl = X_val_df.copy()
+    
+    # Imputación y Codificación Categórica
+    X_tr[num_cols] = X_tr[num_cols].fillna(0)
+    X_vl[num_cols] = X_vl[num_cols].fillna(0)
+    
+    if cat_cols:
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_tr[cat_cols] = oe.fit_transform(X_tr[cat_cols].astype(str).fillna('missing'))
+        X_vl[cat_cols] = oe.transform(X_vl[cat_cols].astype(str).fillna('missing'))
+        
+    # Feature Engineering (basado en numéricas reales)
+    for df in [X_tr, X_vl]:
+        df['num_sum'] = df[num_cols].sum(axis=1)
+        df['num_mean'] = df[num_cols].mean(axis=1)
+        df['num_std'] = df[num_cols].std(axis=1)
+        
+    return X_tr, X_vl
 
 
 def set_seed(seed=42):
@@ -146,18 +153,20 @@ def main():
     set_seed(RANDOM_STATE)
 
     print("[1] Cargando datos...")
-    X, y = load_raw_data()
+    X_df, y = load_raw_data()
+    
+    cat_cols = X_df.select_dtypes(include=['object']).columns.tolist()
+    num_cols = X_df.select_dtypes(exclude=['object']).columns.tolist()
 
-    # HOLDOUT SPLIT before scaling
+    # 2. HOLDOUT SPLIT
     print("[2] Separando holdout test (20%)...")
-    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+    X_pool_raw, X_holdout_raw, y_pool, y_holdout = train_test_split(
+        X_df, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
-    print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+    X_pool_raw = X_pool_raw.reset_index(drop=True)
+    X_holdout_raw = X_holdout_raw.reset_index(drop=True)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"    - Computando en: {device}")
-
     EPOCHS = 60
     BATCH_SIZE = 128
 
@@ -165,23 +174,23 @@ def main():
     oof_preds_proba = np.zeros(len(y_pool))
 
     print("[3] Iniciando K-Fold CV...")
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X_pool, y_pool)):
-        X_train_raw, y_train = X_pool[train_idx], y_pool[train_idx]
-        X_val_raw, y_val = X_pool[val_idx], y_pool[val_idx]
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X_pool_raw, y_pool)):
+        X_tr_raw, y_tr = X_pool_raw.iloc[train_idx], y_pool[train_idx]
+        X_vl_raw, y_vl = X_pool_raw.iloc[val_idx], y_pool[val_idx]
 
-        # FIX: scaler fitted on train fold ONLY
+        # Preprocesamiento y FE por fold
+        X_tr_fe, X_vl_fe = preprocess_step(X_tr_raw, X_vl_raw, cat_cols, num_cols)
+
+        # Escalamiento por fold
         scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train_raw)
-        X_val = scaler.transform(X_val_raw)
+        X_train = scaler.fit_transform(X_tr_fe)
+        X_val = scaler.transform(X_vl_fe)
 
         input_dim = X_train.shape[1]
+        train_loader = DataLoader(TabularDataset(X_train, y_tr), batch_size=BATCH_SIZE, shuffle=True)
+        val_loader = DataLoader(TabularDataset(X_val, y_vl), batch_size=BATCH_SIZE, shuffle=False)
 
-        train_dataset = TabularDataset(X_train, y_train)
-        val_dataset = TabularDataset(X_val, y_val)
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-        model = TabularResNet(input_dim, hidden_dim=256, dropout_rate=0.4).to(device)
+        model = TabularResNet(input_dim).to(device)
         criterion = FocalLoss(alpha=0.6, gamma=2.5)
         optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -191,109 +200,81 @@ def main():
 
         for epoch in range(EPOCHS):
             model.train()
-            train_loss = 0.0
             for batch_X, batch_y in train_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 optimizer.zero_grad()
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
+                loss = criterion(model(batch_X), batch_y)
                 loss.backward()
                 optimizer.step()
-                train_loss += loss.item() * batch_X.size(0)
-            train_loss /= len(train_dataset)
 
             model.eval()
-            val_loss = 0.0
+            v_loss = 0.0
             with torch.no_grad():
                 for batch_X, batch_y in val_loader:
                     batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                    outputs = model(batch_X)
-                    loss = criterion(outputs, batch_y)
-                    val_loss += loss.item() * batch_X.size(0)
-            val_loss /= len(val_dataset)
-            scheduler.step(val_loss)
+                    v_loss += criterion(model(batch_X), batch_y).item() * batch_X.size(0)
+            v_loss /= len(val_idx)
+            scheduler.step(v_loss)
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if v_loss < best_val_loss:
+                best_val_loss = v_loss
                 best_model_weights = model.state_dict().copy()
 
         model.load_state_dict(best_model_weights)
         model.eval()
-        fold_preds = []
+        fold_probs = []
         with torch.no_grad():
             for batch_X, _ in val_loader:
-                batch_X = batch_X.to(device)
-                outputs = model(batch_X)
-                probs = torch.sigmoid(outputs).cpu().numpy()
-                fold_preds.extend(probs)
+                fold_probs.extend(torch.sigmoid(model(batch_X.to(device))).cpu().numpy())
 
-        oof_preds_proba[val_idx] = np.array(fold_preds).flatten()
-        print(f"    - Fold {fold + 1}/5 listo. Mejor Val Loss: {best_val_loss:.4f}")
+        oof_preds_proba[val_idx] = np.array(fold_probs).flatten()
+        print(f"    - Fold {fold + 1}/5 completado.")
 
-    # Threshold tuning on OOF (train pool only)
-    print("\n[4] Threshold tuning sobre OOF del train pool...")
+    # 4. Threshold tuning on OOF
+    print("\n[4] Threshold tuning...")
     best_t = 0.5
     best_target_score = -1.0
     for t in np.linspace(0.1, 0.9, 150):
         preds_t = (oof_preds_proba >= t).astype(int)
-        recall_nok = recall_score(y_pool, preds_t, pos_label=1)
-        if recall_nok < 0.85:
-            continue
-        f1_ok = f1_score(y_pool, preds_t, pos_label=0)
-        f1_w = f1_score(y_pool, preds_t, average='weighted')
-        target_score = f1_w + (f1_ok * 0.5)
-        if target_score > best_target_score:
-            best_target_score = target_score
-            best_t = t
+        if recall_score(y_pool, preds_t, pos_label=1) < 0.85: continue
+        score = f1_score(y_pool, preds_t, average='weighted') + (f1_score(y_pool, preds_t, pos_label=0) * 0.5)
+        if score > best_target_score:
+            best_target_score, best_t = score, t
 
-    print(f"    - Threshold: {best_t:.4f}")
-
-    # HOLDOUT evaluation
-    print("\n[5] Evaluación Final sobre HOLDOUT TEST...")
-    # Retrain scaler on full pool, apply to holdout
+    # 5. Evaluación Final
+    print(f"\n[5] Evaluación Final sobre HOLDOUT (Threshold: {best_t:.4f})")
+    X_pool_fe, X_holdout_fe = preprocess_step(X_pool_raw, X_holdout_raw, cat_cols, num_cols)
+    
     final_scaler = StandardScaler()
-    X_pool_scaled = final_scaler.fit_transform(X_pool)
-    X_holdout_scaled = final_scaler.transform(X_holdout)
+    X_pool_scaled = final_scaler.fit_transform(X_pool_fe)
+    X_holdout_scaled = final_scaler.transform(X_holdout_fe)
 
-    input_dim = X_pool_scaled.shape[1]
-    # Retrain model on full pool
-    final_model = TabularResNet(input_dim, hidden_dim=256, dropout_rate=0.4).to(device)
-    criterion = FocalLoss(alpha=0.6, gamma=2.5)
+    final_model = TabularResNet(X_pool_scaled.shape[1]).to(device)
+    train_loader = DataLoader(TabularDataset(X_pool_scaled, y_pool), batch_size=BATCH_SIZE, shuffle=True)
     optimizer = optim.AdamW(final_model.parameters(), lr=0.001, weight_decay=1e-4)
-
-    train_ds = TabularDataset(X_pool_scaled, y_pool)
-    train_ld = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    criterion = FocalLoss(alpha=0.6, gamma=2.5)
 
     final_model.train()
-    for epoch in range(EPOCHS):
-        for batch_X, batch_y in train_ld:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+    for _ in range(EPOCHS):
+        for b_X, b_y in train_loader:
+            b_X, b_y = b_X.to(device), b_y.to(device)
             optimizer.zero_grad()
-            loss = criterion(final_model(batch_X), batch_y)
-            loss.backward()
+            criterion(final_model(b_X), b_y).backward()
             optimizer.step()
 
     final_model.eval()
-    holdout_ds = TabularDataset(X_holdout_scaled, y_holdout)
-    holdout_ld = DataLoader(holdout_ds, batch_size=BATCH_SIZE, shuffle=False)
+    holdout_loader = DataLoader(TabularDataset(X_holdout_scaled, y_holdout), batch_size=BATCH_SIZE, shuffle=False)
     holdout_probs = []
     with torch.no_grad():
-        for batch_X, _ in holdout_ld:
-            batch_X = batch_X.to(device)
-            probs = torch.sigmoid(final_model(batch_X)).cpu().numpy()
-            holdout_probs.extend(probs)
+        for b_X, _ in holdout_loader:
+            holdout_probs.extend(torch.sigmoid(final_model(b_X.to(device))).cpu().numpy())
 
-    holdout_proba = np.array(holdout_probs).flatten()
-    holdout_preds = (holdout_proba >= best_t).astype(int)
-
-    target_names = ['OK (Minoritario)', 'NOK (Mayoritario)']
-    print("\nMatriz de Confusión (HOLDOUT):\n", confusion_matrix(y_holdout, holdout_preds))
-    print("\nReporte de Clasificación (HOLDOUT):\n",
-          classification_report(y_holdout, holdout_preds, target_names=target_names))
+    holdout_preds = (np.array(holdout_probs).flatten() >= best_t).astype(int)
+    print("\nMatriz de Confusión:\n", confusion_matrix(y_holdout, holdout_preds))
+    print("\nReporte:\n", classification_report(y_holdout, holdout_preds, target_names=['OK (Min)', 'NOK (May)']))
 
     print(f"\nTiempo Total: {time.time() - start_time:.2f}s")
     print("=" * 60)
-
 
 if __name__ == '__main__':
     main()

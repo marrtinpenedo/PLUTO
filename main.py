@@ -58,7 +58,7 @@ warnings.filterwarnings("ignore")
 
 BASE_DIR   = Path(__file__).parent
 MODEL_PATH = BASE_DIR / "models" / "lightgbm_optimized_model.pkl"
-DATA_PATH  = BASE_DIR / "data" / "raw" / "Dataset_01_Anonimizado.xlsx"
+DATA_PATH  = BASE_DIR / "data" / "raw" / "Dataset_v2_anonimizado.xlsx"
 TARGET_COL = "Variable de Salida"
 
 OLLAMA_BASE_URL = "http://localhost:11434"

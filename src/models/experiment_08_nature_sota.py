@@ -7,6 +7,7 @@ EXPERIMENTO 08 - NATURE 2025 & ASYMMETRIC LOSS SOTA (ASL + ORD)
 VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
+  - Imputación, Codificación y Feature Engineering aplicados POST-SPLIT.
   - ORD computado SÓLO sobre train pool (inner CV).
   - Sample weights derivados de ORD sólo sobre train pool.
   - Threshold tuning sólo sobre OOF del train pool.
@@ -20,6 +21,7 @@ import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
+from sklearn.preprocessing import OrdinalEncoder
 from scipy.special import expit
 import warnings
 
@@ -63,18 +65,47 @@ def load_raw_data():
     df = df.reset_index(drop=True)
 
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
+    df = df.drop(columns=[target_col])
+    df = df.drop(columns=['ID','Variable 02'], errors='ignore')
+    
     y = df['target'].values
-    X = df.drop(columns=[target_col, 'target'])
-
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
-
-    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    if num_cols:
-        X['num_sum'] = X[num_cols].sum(axis=1)
-
+    
+    # CORRECCIÓN: Devolvemos datos crudos
+    X = df.drop(columns=['target'])
+    
     return X, y
+
+
+def preprocess_data(X_pool_df, X_holdout_df):
+    """
+    Applies imputation, encoding, and feature engineering post-split.
+    """
+    X_pool = X_pool_df.copy()
+    X_holdout = X_holdout_df.copy()
+    
+    cat_cols = X_pool.select_dtypes(include=['object', 'category']).columns.tolist()
+    num_cols = X_pool.select_dtypes(exclude=['object', 'category']).columns.tolist()
+
+    # Imputación de nulos
+    X_pool[num_cols] = X_pool[num_cols].fillna(0)
+    X_holdout[num_cols] = X_holdout[num_cols].fillna(0)
+
+    if len(cat_cols) > 0:
+        X_pool[cat_cols] = X_pool[cat_cols].fillna('missing')
+        X_holdout[cat_cols] = X_holdout[cat_cols].fillna('missing')
+        
+        # Codificación Ordinal Segura
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_pool[cat_cols] = oe.fit_transform(X_pool[cat_cols])
+        X_holdout[cat_cols] = oe.transform(X_holdout[cat_cols])
+
+    # Feature Engineering de la suma (ahora num_cols incluye las nuevas generadas)
+    current_num_cols = X_pool.select_dtypes(include=[np.number]).columns.tolist()
+    if current_num_cols:
+        X_pool['num_sum'] = X_pool[current_num_cols].sum(axis=1)
+        X_holdout['num_sum'] = X_holdout[current_num_cols].sum(axis=1)
+
+    return X_pool, X_holdout
 
 
 def apply_ord_on_train(X_pool, y_pool):
@@ -117,16 +148,20 @@ def main():
     start_time = time.time()
 
     print("[1] Cargando datos...")
-    X, y = load_raw_data()
+    X_raw, y = load_raw_data()
 
-    # HOLDOUT SPLIT
-    print("[2] Separando holdout test (20%)...")
-    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+    # HOLDOUT SPLIT (Sobre los datos crudos)
+    print("[2] Separando holdout test (20%) ANTES de preprocesar...")
+    X_pool_raw, X_holdout_raw, y_pool, y_holdout = train_test_split(
+        X_raw, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
-    X_pool = X_pool.reset_index(drop=True)
-    X_holdout = X_holdout.reset_index(drop=True)
+    X_pool_raw = X_pool_raw.reset_index(drop=True)
+    X_holdout_raw = X_holdout_raw.reset_index(drop=True)
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    # Preprocesamiento POST-SPLIT
+    print("\n[2.5] Aplicando Imputación, Codificación y Feature Engineering...")
+    X_pool, X_holdout = preprocess_data(X_pool_raw, X_holdout_raw)
 
     # ORD on train pool ONLY
     sample_weights = apply_ord_on_train(X_pool, y_pool)

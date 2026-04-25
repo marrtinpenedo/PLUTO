@@ -4,15 +4,15 @@
 """
 EXPERIMENTO 07 - DART + RUSBoost + UMAP + Polynomial Interactions
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
-Cambios:
+VERSIÓN CORREGIDA — Sin data leakage y matemáticamente seguro.
+Cambios integrados:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
-  - PolynomialFeatures fitted PER-FOLD (stateless but feature selection on train).
-  - UMAP fitted PER-FOLD (fit on fold-train, transform fold-val).
-  - StandardScaler fitted PER-FOLD.
+  - OrdinalEncoding e imputación seguros POST-SPLIT.
+  - Varianza calculada SOLO sobre variables numéricas reales.
+  - PolynomialFeatures fitted PER-FOLD.
+  - UMAP fitted PER-FOLD.
   - Supervised feature selection (LightGBM) PER-FOLD.
   - Threshold tuning sólo sobre OOF del train pool.
-  - Métricas finales sobre holdout test.
 """
 
 import os
@@ -20,10 +20,11 @@ import time
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures, OrdinalEncoder
 from sklearn.ensemble import ExtraTreesClassifier, VotingClassifier
-from imblearn.ensemble import RUSBoostClassifier
+from imblearn.ensemble import BalancedBaggingClassifier
 import xgboost as xgb
 import lightgbm as lgb
 import umap
@@ -62,18 +63,18 @@ def load_raw_data():
     df = df.reset_index(drop=True)
 
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
+    df = df.drop(columns=[target_col])
+    df = df.drop(columns=['ID','Variable 02'], errors='ignore')
+
     y = df['target'].values
-    X = df.drop(columns=[target_col, 'target'])
-
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
-
-    X = X.fillna(0)
+    
+    # CORRECCIÓN: Devolvemos los datos crudos
+    X = df.drop(columns=['target'])
     return X, y
 
 
-def apply_fe_per_fold(X_train, X_val, y_train):
+# CORRECCIÓN: Añadido parámetro real_num_cols para evitar varianza de categorías
+def apply_fe_per_fold(X_train, X_val, y_train, real_num_cols):
     """
     Per-fold feature engineering:
     1. Polynomial interactions (fit on train variance selection)
@@ -83,10 +84,8 @@ def apply_fe_per_fold(X_train, X_val, y_train):
     X_train = X_train.copy()
     X_val = X_val.copy()
 
-    num_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
-
-    # 1. Polynomial: select top-10 variance cols FROM TRAIN
-    variances = X_train[num_cols].var().sort_values(ascending=False)
+    # 1. Polynomial: select top-10 variance cols FROM TRAIN (Solo numéricas reales)
+    variances = X_train[real_num_cols].var().sort_values(ascending=False)
     top_10_vars = variances.head(10).index.tolist()
 
     poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
@@ -114,7 +113,7 @@ def apply_fe_per_fold(X_train, X_val, y_train):
     X_val['umap_y'] = X_umap_vl[:, 1]
 
     # 3. Feature selection: fit LightGBM on TRAIN only
-    model_fs = lgb.LGBMClassifier(n_estimators=300, random_state=RANDOM_STATE, is_unbalance=True, verbose=-1)
+    model_fs = lgb.LGBMClassifier(n_estimators=300, random_state=RANDOM_STATE, is_unbalance=True, verbosity=-1)
     model_fs.fit(X_train, y_train)
     importances = model_fs.feature_importances_
     valid_indices = np.where(importances >= 5)[0]
@@ -128,13 +127,20 @@ def get_niche_ensemble():
         booster='dart', rate_drop=0.1, skip_drop=0.5, max_depth=5,
         scale_pos_weight=0.8, random_state=RANDOM_STATE, n_estimators=300, n_jobs=-1
     )
-    rus = RUSBoostClassifier(n_estimators=400, learning_rate=0.05, random_state=RANDOM_STATE)
+    
+    bbc = BalancedBaggingClassifier(
+        n_estimators=400,
+        random_state=RANDOM_STATE,
+        n_jobs=-1
+    )
+    
     et = ExtraTreesClassifier(
         n_estimators=300, max_depth=30, min_samples_leaf=4,
         class_weight='balanced_subsample', random_state=RANDOM_STATE, n_jobs=-1
     )
+    
     ensemble = VotingClassifier(
-        estimators=[('dart', dart), ('rus', rus), ('et', et)],
+        estimators=[('dart', dart), ('bbc', bbc), ('et', et)],
         voting='soft', weights=[2.0, 1.5, 1.0]
     )
     return ensemble
@@ -147,16 +153,32 @@ def main():
     start_time = time.time()
 
     print("[1] Cargando datos...")
-    X, y = load_raw_data()
+    X_df, y = load_raw_data()
+    
+    cat_cols = X_df.select_dtypes(include=['object']).columns.tolist()
+    real_num_cols = X_df.select_dtypes(exclude=['object']).columns.tolist()
 
     # HOLDOUT SPLIT
     print("[2] Separando holdout test (20%)...")
     X_pool, X_holdout, y_pool, y_holdout = train_test_split(
-        X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
+        X_df, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
     X_pool = X_pool.reset_index(drop=True)
     X_holdout = X_holdout.reset_index(drop=True)
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    # CORRECCIÓN: Preprocesamiento de categorías y nulos post-split
+    print("\n[2.5] Aplicando Imputación y Codificación Ordinal Segura...")
+    X_pool[real_num_cols] = X_pool[real_num_cols].fillna(0)
+    X_holdout[real_num_cols] = X_holdout[real_num_cols].fillna(0)
+
+    if len(cat_cols) > 0:
+        X_pool[cat_cols] = X_pool[cat_cols].fillna('missing')
+        X_holdout[cat_cols] = X_holdout[cat_cols].fillna('missing')
+        
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_pool[cat_cols] = oe.fit_transform(X_pool[cat_cols])
+        X_holdout[cat_cols] = oe.transform(X_holdout[cat_cols])
 
     # 5-Fold CV with per-fold FE
     print("\n[3] 5-Fold CV con FE per-fold (Poly+UMAP+FS)...")
@@ -167,8 +189,8 @@ def main():
         X_tr_raw, y_tr = X_pool.iloc[train_idx], y_pool[train_idx]
         X_vl_raw, y_vl = X_pool.iloc[val_idx], y_pool[val_idx]
 
-        # All FE per-fold (poly, UMAP, feature selection — all fitted on train)
-        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, y_tr)
+        # Pasamos real_num_cols para evitar varianza sobre categorías
+        X_tr, X_vl = apply_fe_per_fold(X_tr_raw, X_vl_raw, y_tr, real_num_cols)
 
         ensemble = get_niche_ensemble()
         ensemble.fit(X_tr, y_tr)
@@ -182,7 +204,8 @@ def main():
 
     # HOLDOUT evaluation
     print("\n[5] Evaluación Final sobre HOLDOUT TEST...")
-    X_pool_fe, X_holdout_fe = apply_fe_per_fold(X_pool, X_holdout, y_pool)
+    # FE final sobre todo el pool vs holdout
+    X_pool_fe, X_holdout_fe = apply_fe_per_fold(X_pool, X_holdout, y_pool, real_num_cols)
 
     final_ensemble = get_niche_ensemble()
     final_ensemble.fit(X_pool_fe, y_pool)

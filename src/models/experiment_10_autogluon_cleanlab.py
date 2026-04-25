@@ -7,6 +7,7 @@ EXPERIMENTO 10 - CleanLab Confident Learning + Meta-Stack
 VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de CleanLab o cualquier procesamiento.
+  - Codificación Categórica e Imputación realizadas DESPUÉS del holdout split.
   - CleanLab aplicado SÓLO sobre train pool.
   - is_unbalance=False para CleanLab's LGB (mejor calibración de probas).
   - Stacker entrenado en train pool limpio, evaluado en holdout test ORIGINAL.
@@ -19,6 +20,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.preprocessing import OrdinalEncoder # Añadido
 import lightgbm as lgb
 import warnings
 
@@ -45,13 +47,9 @@ def load_raw_data():
     target_col = 'Variable de Salida'
     df = df.dropna(subset=[target_col])
     df = df.reset_index(drop=True)
-
-    cat_cols = df.select_dtypes(include=['object']).columns.tolist()
-    if target_col in cat_cols:
-        cat_cols.remove(target_col)
-    for col in cat_cols:
-        df[col] = df[col].astype('category').cat.codes
-
+    df = df.drop(columns=['ID','Variable 02'], errors='ignore')
+    
+    # LEAKAGE CORREGIDO: Devolvemos los datos crudos, sin transformar.
     df[target_col] = df[target_col].map({'NOK': 1, 'OK': 0})
     return df, target_col
 
@@ -69,7 +67,6 @@ def cleanlab_on_train_only(X_train, y_train):
         Xt, yt = X_train[train_idx], y_train[train_idx]
         Xv, yv = X_train[val_idx], y_train[val_idx]
 
-        # FIX: no is_unbalance for better calibration for CleanLab
         model = lgb.LGBMClassifier(random_state=RANDOM_STATE, verbosity=-1)
         model.fit(Xt, yt)
         cv_pred_probs[val_idx] = model.predict_proba(Xv)
@@ -88,7 +85,7 @@ def cleanlab_on_train_only(X_train, y_train):
 
     X_clean = X_train[clean_mask]
     y_clean = y_train[clean_mask]
-    print(f"    - Train original: {len(y_train)} → Train limpio: {len(y_clean)}")
+    print(f"    - Train original: {len(y_train)} -> Train limpio: {len(y_clean)}")
 
     return X_clean, y_clean
 
@@ -101,22 +98,42 @@ def main():
 
     print("[1] Cargando datos...")
     df, target_col = load_raw_data()
-
-    X = df.drop(columns=[target_col]).fillna(0).values
+    
+    X = df.drop(columns=[target_col])
     y = df[target_col].values
+    
+    # Identificamos columnas para preprocesamiento posterior
+    cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+    num_cols = X.select_dtypes(exclude=['object', 'category']).columns.tolist()
 
-    # HOLDOUT SPLIT — BEFORE CleanLab
-    print("[2] Separando holdout test (20%) ANTES de CleanLab...")
-    X_pool, X_holdout, y_pool, y_holdout = train_test_split(
+    # HOLDOUT SPLIT — BEFORE CleanLab AND Preprocessing
+    print("[2] Separando holdout test (20%) ANTES de preprocesar...")
+    X_pool_df, X_holdout_df, y_pool, y_holdout = train_test_split(
         X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
+
+    print("[3] Aplicando preprocesamiento (OrdinalEncoding + Imputación)...")
+    # LEAKAGE CORREGIDO: Imputación y codificación POST-split
+    X_pool_df[num_cols] = X_pool_df[num_cols].fillna(0)
+    X_holdout_df[num_cols] = X_holdout_df[num_cols].fillna(0)
+
+    if len(cat_cols) > 0:
+        X_pool_df[cat_cols] = X_pool_df[cat_cols].fillna('missing')
+        X_holdout_df[cat_cols] = X_holdout_df[cat_cols].fillna('missing')
+        
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_pool_df[cat_cols] = oe.fit_transform(X_pool_df[cat_cols])
+        X_holdout_df[cat_cols] = oe.transform(X_holdout_df[cat_cols])
+        
+    X_pool = X_pool_df.values
+    X_holdout = X_holdout_df.values
 
     # CleanLab on train pool ONLY
     X_clean, y_clean = cleanlab_on_train_only(X_pool, y_pool)
 
     # Stack ensemble trained on CLEANED train, evaluated on ORIGINAL holdout
-    print("\n[3] Entrenando Meta-Stack sobre datos limpios...")
+    print("\n[4] Entrenando Meta-Stack sobre datos limpios...")
     cb = CatBoostClassifier(
         iterations=600, depth=6, learning_rate=0.03, l2_leaf_reg=3,
         loss_function='Logloss', verbose=0, random_state=RANDOM_STATE
@@ -140,7 +157,7 @@ def main():
     stacker.fit(X_clean, y_clean)
 
     # HOLDOUT evaluation (original, un-cleaned holdout)
-    print("\n[4] Evaluación Final sobre HOLDOUT TEST (datos originales)...")
+    print("\n[5] Evaluación Final sobre HOLDOUT TEST (datos originales)...")
     preds = stacker.predict(X_holdout)
 
     print("\n" + "*" * 50)

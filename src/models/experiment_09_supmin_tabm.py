@@ -4,13 +4,12 @@
 """
 EXPERIMENTO 09 - SupMin + TabM (Vanguard Architecture)
 ----------------------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
+VERSIÓN CORREGIDA — Sin data leakage y con arquitecturas conectadas.
 Cambios:
-  - Holdout test (20%) separado ANTES de cualquier procesamiento.
-  - StandardScaler DENTRO del CV loop (fit fold-train, transform fold-val).
-  - RANDOM_STATE consistente (no hardcoded 42).
-  - Threshold tuning sólo sobre OOF del train pool.
-  - Métricas finales sobre holdout test.
+  - Holdout test separado antes del preprocesamiento.
+  - Imputación y OrdinalEncoding aplicados DENTRO del CV loop.
+  - StandardScaler aplicado DENTRO del CV loop.
+  - TabMClassifier ahora procesa: [Variables Originales + Representaciones Latentes].
 """
 
 import os
@@ -21,7 +20,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, recall_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 from torch.utils.data import TensorDataset, DataLoader
 import time
 import warnings
@@ -132,10 +131,12 @@ class TabMBatchEnsembleLayer(nn.Module):
 
 
 class TabMClassifier(nn.Module):
-    def __init__(self, input_dim=102, ensemble_size=32):
+    # CAMBIO: Agregado projection_dim para aceptar la representación latente
+    def __init__(self, input_dim=102, projection_dim=32, ensemble_size=32):
         super(TabMClassifier, self).__init__()
         self.ensemble_size = ensemble_size
-        self.layer1 = TabMBatchEnsembleLayer(input_dim, 256, ensemble_size)
+        combined_dim = input_dim + projection_dim
+        self.layer1 = TabMBatchEnsembleLayer(combined_dim, 256, ensemble_size)
         self.norm1 = nn.LayerNorm(256)
         self.layer2 = TabMBatchEnsembleLayer(256, 128, ensemble_size)
         self.norm2 = nn.LayerNorm(128)
@@ -156,15 +157,17 @@ class TabMClassifier(nn.Module):
 # =====================================================================
 # 4. TRAINING PIPELINE
 # =====================================================================
-def vanguard_training_pipeline(train_loader, val_loader, input_dim, epochs=20):
+def vanguard_training_pipeline(train_loader, val_loader, input_dim, projection_dim=32, epochs=20):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    encoder = SupMinEncoder(input_dim=input_dim).to(device)
-    classifier = TabMClassifier(input_dim=input_dim, ensemble_size=32).to(device)
+    encoder = SupMinEncoder(input_dim=input_dim, projection_dim=projection_dim).to(device)
+    classifier = TabMClassifier(input_dim=input_dim, projection_dim=projection_dim, ensemble_size=32).to(device)
+    
     dwb_loss = DWBLoss(base_alpha=0.5).to(device)
     opt_contrastive = torch.optim.AdamW(encoder.parameters(), lr=1e-3)
     opt_tabm = torch.optim.AdamW(classifier.parameters(), lr=1e-3, weight_decay=1e-4)
 
     for epoch in range(epochs):
+        # 1. Entrenar Encoder
         encoder.train()
         for x_b, y_b in train_loader:
             x_b, y_b = x_b.to(device), y_b.to(device)
@@ -174,21 +177,35 @@ def vanguard_training_pipeline(train_loader, val_loader, input_dim, epochs=20):
             loss_c.backward()
             opt_contrastive.step()
 
+        # 2. Entrenar Clasificador
         classifier.train()
+        encoder.eval() # Modo evaluación para extraer latents limpios
         for x_b, y_b in train_loader:
             x_b, y_b = x_b.to(device), y_b.to(device).float()
             opt_tabm.zero_grad()
-            logits = classifier(x_b)
+            
+            # CAMBIO: Conectar arquitecturas (con detach para no alterar el encoder aquí)
+            with torch.no_grad():
+                z_latents = encoder(x_b)
+            combined_x = torch.cat([x_b, z_latents], dim=1)
+            
+            logits = classifier(combined_x)
             loss_t = dwb_loss(logits, y_b)
             loss_t.backward()
             opt_tabm.step()
 
+        # 3. Validación y actualización de DWB alpha
         classifier.eval()
         minority_errors = []
         with torch.no_grad():
             for x_v, y_v in val_loader:
                 x_v, y_v = x_v.to(device), y_v.to(device)
-                logits_v = classifier(x_v)
+                
+                # CAMBIO: Conectar en validación también
+                z_latents_v = encoder(x_v)
+                combined_v = torch.cat([x_v, z_latents_v], dim=1)
+                
+                logits_v = classifier(combined_v)
                 preds = (torch.sigmoid(logits_v) >= 0.5).int()
                 minority_mask = (y_v == 0)
                 if minority_mask.sum() > 0:
@@ -223,54 +240,83 @@ def load_raw_data():
     target_col = 'Variable de Salida'
     df = df.dropna(subset=[target_col])
     df = df.reset_index(drop=True)
-
+    df = df.drop(columns=['ID','Variable 02'], errors='ignore')
+    
     df['target'] = df[target_col].map({'NOK': 1, 'OK': 0})
     y = df['target'].values
-    X = df.drop(columns=[target_col, 'target'])
+    X = df.drop(columns=['target', target_col], errors='ignore')
+    
+    # CAMBIO: Devuelve el DataFrame para poder procesarlo en cada fold
+    return X, y
 
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    for col in cat_cols:
-        X[col] = X[col].astype('category').cat.codes
 
-    X = X.fillna(0)
-    return X.values, y
+# =====================================================================
+# FUNCIÓN DE PREPROCESAMIENTO PER-FOLD
+# =====================================================================
+def preprocess_fold(X_train_df, X_val_df, cat_cols, num_cols, is_holdout=False):
+    # Copias para no alterar los DataFrames originales
+    X_train = X_train_df.copy()
+    X_val = X_val_df.copy()
+    
+    # Imputación de nulos
+    X_train[num_cols] = X_train[num_cols].fillna(0)
+    X_val[num_cols] = X_val[num_cols].fillna(0)
+    
+    if len(cat_cols) > 0:
+        X_train[cat_cols] = X_train[cat_cols].fillna('missing')
+        X_val[cat_cols] = X_val[cat_cols].fillna('missing')
+        
+        # Ordinal Encoder (Seguro contra leakage y categorías desconocidas)
+        oe = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+        X_train[cat_cols] = oe.fit_transform(X_train[cat_cols])
+        X_val[cat_cols] = oe.transform(X_val[cat_cols])
+        
+    # Escalado StandardScaler
+    scaler = StandardScaler()
+    X_train[num_cols] = scaler.fit_transform(X_train[num_cols])
+    X_val[num_cols] = scaler.transform(X_val[num_cols])
+    
+    return X_train.values, X_val.values
 
 
 def main():
     print("=" * 60)
-    print(" EXPERIMENTO 09 (SUPMIN + TABM) — SIN LEAKAGE")
+    print(" EXPERIMENTO 09 (SUPMIN + TABM) — ARQUITECTURAS CONECTADAS")
     print("=" * 60)
     start_time = time.time()
 
     print("[1] Cargando datos...")
     X, y = load_raw_data()
+    
+    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+    num_cols = X.select_dtypes(exclude=['object']).columns.tolist()
 
-    # HOLDOUT SPLIT
+    # HOLDOUT SPLIT (Sobre los datos crudos)
     print("[2] Separando holdout test (20%)...")
     X_pool, X_holdout, y_pool, y_holdout = train_test_split(
         X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
     )
     print(f"    - Pool: {len(y_pool)} | Holdout: {len(y_holdout)}")
 
-    # 5-Fold CV with per-fold scaling
-    print("\n[3] 5-Fold CV con scaler per-fold...")
+    # 5-Fold CV with per-fold scaling & encoding
+    print("\n[3] 5-Fold CV con scaler y encoding per-fold...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
     oof_proba = np.zeros(len(y_pool))
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(X_pool, y_pool)):
-        X_train_raw, y_train = X_pool[train_idx], y_pool[train_idx]
-        X_val_raw, y_val = X_pool[val_idx], y_pool[val_idx]
+        X_train_raw = X_pool.iloc[train_idx]
+        y_train = y_pool[train_idx]
+        X_val_raw = X_pool.iloc[val_idx]
+        y_val = y_pool[val_idx]
 
-        # FIX: scaler per-fold
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train_raw)
-        X_val = scaler.transform(X_val_raw)
+        # CAMBIO: Preprocesamiento sin leakage aplicado aquí
+        X_train_arr, X_val_arr = preprocess_fold(X_train_raw, X_val_raw, cat_cols, num_cols)
 
-        input_dim = X_train.shape[1]
+        input_dim = X_train_arr.shape[1]
 
-        X_train_t = torch.tensor(X_train, dtype=torch.float32)
+        X_train_t = torch.tensor(X_train_arr, dtype=torch.float32)
         y_train_t = torch.tensor(y_train, dtype=torch.long)
-        X_val_t = torch.tensor(X_val, dtype=torch.float32)
+        X_val_t = torch.tensor(X_val_arr, dtype=torch.float32)
         y_val_t = torch.tensor(y_val, dtype=torch.long)
 
         train_loader = DataLoader(TensorDataset(X_train_t, y_train_t), batch_size=256, shuffle=True)
@@ -279,12 +325,18 @@ def main():
         encoder, classifier = vanguard_training_pipeline(train_loader, val_loader, input_dim=input_dim, epochs=20)
 
         classifier.eval()
+        encoder.eval()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         fold_probs = []
         with torch.no_grad():
             for x_v, _ in val_loader:
                 x_v = x_v.to(device)
-                logits_v = classifier(x_v)
+                
+                # CAMBIO: Conectar arquitecturas para las predicciones OOF
+                z_latents_v = encoder(x_v)
+                combined_v = torch.cat([x_v, z_latents_v], dim=1)
+                
+                logits_v = classifier(combined_v)
                 probs = torch.sigmoid(logits_v).cpu().numpy()
                 fold_probs.extend(probs)
 
@@ -300,30 +352,37 @@ def main():
 
     # HOLDOUT evaluation
     print("\n[5] Evaluación Final sobre HOLDOUT TEST...")
-    final_scaler = StandardScaler()
-    X_pool_scaled = final_scaler.fit_transform(X_pool)
-    X_holdout_scaled = final_scaler.transform(X_holdout)
+    
+    # CAMBIO: Preprocesamiento final usando todo el Train Pool para evaluar el Holdout
+    X_pool_arr, X_holdout_arr = preprocess_fold(X_pool, X_holdout, cat_cols, num_cols)
 
-    input_dim = X_pool_scaled.shape[1]
-    X_pool_t = torch.tensor(X_pool_scaled, dtype=torch.float32)
+    input_dim = X_pool_arr.shape[1]
+    X_pool_t = torch.tensor(X_pool_arr, dtype=torch.float32)
     y_pool_t = torch.tensor(y_pool, dtype=torch.long)
-    X_holdout_t = torch.tensor(X_holdout_scaled, dtype=torch.float32)
+    X_holdout_t = torch.tensor(X_holdout_arr, dtype=torch.float32)
     y_holdout_t = torch.tensor(y_holdout, dtype=torch.long)
 
     final_train_ld = DataLoader(TensorDataset(X_pool_t, y_pool_t), batch_size=256, shuffle=True)
-    # Use a small val_loader for DWB alpha updates (we use a subset of train as proxy)
+    # Subset of train as proxy for validation during final fit
     final_val_ld = DataLoader(TensorDataset(X_pool_t[:256], y_pool_t[:256]), batch_size=256, shuffle=False)
 
-    _, final_classifier = vanguard_training_pipeline(final_train_ld, final_val_ld, input_dim=input_dim, epochs=20)
+    final_encoder, final_classifier = vanguard_training_pipeline(final_train_ld, final_val_ld, input_dim=input_dim, epochs=20)
 
     final_classifier.eval()
+    final_encoder.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     holdout_probs = []
     holdout_ld = DataLoader(TensorDataset(X_holdout_t, y_holdout_t), batch_size=256, shuffle=False)
+    
     with torch.no_grad():
         for x_h, _ in holdout_ld:
             x_h = x_h.to(device)
-            logits = final_classifier(x_h)
+            
+            # CAMBIO: Conectar arquitecturas para las predicciones del Holdout
+            z_latents_h = final_encoder(x_h)
+            combined_h = torch.cat([x_h, z_latents_h], dim=1)
+            
+            logits = final_classifier(combined_h)
             probs = torch.sigmoid(logits).cpu().numpy()
             holdout_probs.extend(probs)
 
@@ -339,4 +398,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main
