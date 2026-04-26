@@ -61,10 +61,19 @@ Refactoriza el código monolítico hacia esta estructura:
 ---
 
 ## 6. Estado del Proyecto y Progreso
-*(Esta sección debe ser actualizada por el agente tras cada tarea)*
+*(Actualizado: 2026-04-26 — Refactorización v2.0 completada)*
 
-* [ ] Refactorización de estructura de carpetas (`/app`, `/utils`).
-* [ ] Implementación de `ml_engine.py` (Carga de Exp_05 y `pathlib`).
-* [ ] Implementación de `llm_client.py` con validación de modelos locales.
-* [ ] Desarrollo de la interfaz Gradio con entrada dual (Manual/CSV).
-* [ ] Integración final de SHAP y Chatbot.
+* [x] Refactorización de estructura de carpetas (`/app`, `/utils`).
+* [x] Implementación de `ml_engine.py` (Carga de Exp_05 y `pathlib`).
+* [x] Implementación de `llm_client.py` con validación de modelos locales.
+* [x] Desarrollo de la interfaz Gradio con entrada dual (Manual/CSV).
+* [x] Integración final de SHAP y Chatbot.
+
+### Artefactos generados en v2.0
+* `scripts/export_exp05_model.py` — Serializa el pkl del Exp_05 (VAE + CatBoost).
+* `models/exp05_vae_catboost.pkl` — Modelo entrenado, threshold=0.6818, 123 features.
+* `utils/ml_engine.py` — Motor de predicción (singleton, pathlib-safe).
+* `utils/explainer.py` — SHAP TreeExplainer con top-K dinamico (3-5).
+* `utils/llm_client.py` — Cliente Ollama con validacion de modelo disponible.
+* `app/ui.py` — Interfaz Gradio con formulario manual + carga CSV + warnings.
+* `main.py` — Entry point minimo (35 lineas).

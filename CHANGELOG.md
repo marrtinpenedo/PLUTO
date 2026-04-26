@@ -1,6 +1,44 @@
 # CHANGELOG — Proyecto PLUTO
 
+## [v3.0] — 2026-04-26 · Refactorización Modular + Motor Exp_05
+
+**Scope:** Arquitectura completa — `main.py` (monolito) -> `/app` + `/utils`
+**Motor:** Migración de Exp_01 (LightGBM) a **Exp_05 (VAE + CatBoost)**
+**Threshold:** 0.6818 | **Features:** 123 (102 orig + 10 bins + 1 vae_err + 12 vae_latents - 2 excluidas)
+
+### Archivos nuevos
+
+| Archivo | Descripción |
+|---|---|
+| `scripts/export_exp05_model.py` | Script one-shot: entrena Exp_05 y serializa pkl (32 s en CPU) |
+| `models/exp05_vae_catboost.pkl` | Artefacto serializado: CatBoost + VAE state_dict + scalers |
+| `utils/__init__.py` | Paquete utils raíz |
+| `utils/ml_engine.py` | Motor de predicción singleton, pathlib-safe, con pipeline completo |
+| `utils/explainer.py` | SHAP TreeExplainer con top-K dinámico (3-5 features) |
+| `utils/llm_client.py` | Cliente Ollama: check server + check model + streaming |
+| `app/__init__.py` | Paquete app |
+| `app/ui.py` | Interfaz Gradio completa (manual + CSV + warnings + chatbot) |
+
+### Archivos modificados
+
+| Archivo | Cambio |
+|---|---|
+| `main.py` | Reducido de 876 líneas a 35 (solo entry point) |
+| `GEMINI.md` | Progreso marcado como completado |
+
+### Decisiones técnicas
+
+- **pathlib** en todas las rutas (compatibilidad Windows/Linux con espacios en OneDrive).
+- VAE serializado como `bytes` dentro del pkl (evita dependencia de ficheros .pt separados).
+- Singleton pattern en `get_engine()` y `get_explainer()` para cargar una sola vez al arrancar.
+- Top-K dinámico SHAP: si las 3 primeras features acumulan >=80% del impacto, se muestran 3; si no, 5.
+- Ollama: comprobación en dos pasos (server ping + model in /api/tags) con mensaje de error exacto.
+- Warnings de rangos: no bloqueantes, HTML visual, calculados contra estadísticos del train pool.
+
+---
+
 ## [v2.0] — 2026-04-25 · Auditoría de Integridad y Blindaje de Datos
+
 
 **Merge:** `New-tests` → `prototipo-1`  
 **Commit:** `6e99e12` · Author: santipereeira  
