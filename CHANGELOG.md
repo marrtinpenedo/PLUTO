@@ -1,6 +1,41 @@
-# CHANGELOG — Proyecto PLUTO
+# CHANGELOG - Proyecto PLUTO
+
+## [v3.1] - 2026-04-26 - Hotfix UI: ASCII compatibility + CSV header matching
+
+**Scope:** `app/ui.py`, `main.py`, `README.md`
+**Autor:** santipereeira (edicion manual post-lanzamiento)
+
+### Cambios en `app/ui.py`
+
+#### 1. Normalizacion ASCII (compatibilidad cp1252 Windows)
+- **Cambio:** Sustitucion de todos los caracteres Unicode/emoji por equivalentes ASCII.
+- **Afecta:** labels de botones, banners HTML, mensajes de warning, titulos de secciones.
+- **Motivo:** Evitar `UnicodeEncodeError` en terminales Windows con codec cp1252.
+
+#### 2. Mejora del autocompletado CSV (`on_csv_upload`)
+- **Antes:** Dos loops separados (primero `num_cols`, luego `cat_cols`), matching exacto por nombre de columna.
+- **Ahora:** Un unico loop sobre `eng.orig_feats` (num + cat en orden correcto), con matching case-insensitive y tolerante a espacios en los headers del CSV.
+- **Detalle:** `raw_cols = {str(c).strip().lower(): str(c).strip() for c in df_csv.columns}` permite que "Temperatura ", "TEMPERATURA" o "temperatura" se mapeen correctamente a la variable del modelo.
+- **Fallback:** Si la columna no existe en el CSV, se usa la media (numerica) o la primera categoria (categorica).
+- **Log de errores:** `print(f"[ERR] Error en autocompletado CSV: {e}")` para trazabilidad.
+
+### Cambios en `main.py`
+
+- Sustitucion de caracteres Unicode en docstring (compatibilidad ASCII).
+- Linea en blanco al final del fichero (PEP 8).
+
+### Cambios en `README.md`
+
+- Reescritura completa para reflejar la arquitectura v2.0.
+- Correccion de la ruta del modelo (`experiment_05_ultimate.pkl` -> `exp05_vae_catboost.pkl`).
+- Instrucciones de ejecucion actualizadas: paso previo `export_exp05_model.py`.
+- Descripcion del flujo CSV mejorada (tolerancia a cabeceras con espacios/mayusculas).
+- Eliminacion de caracteres Unicode/emoji para compatibilidad multiplataforma.
+
+---
 
 ## [v3.0] — 2026-04-26 · Refactorización Modular + Motor Exp_05
+
 
 **Scope:** Arquitectura completa — `main.py` (monolito) -> `/app` + `/utils`
 **Motor:** Migración de Exp_01 (LightGBM) a **Exp_05 (VAE + CatBoost)**
