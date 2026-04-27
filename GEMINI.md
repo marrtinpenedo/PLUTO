@@ -1,79 +1,67 @@
-# 🧠 SYSTEM PROMPT: Proyecto PLUTO (CTAG) - Prototipo Funcional V1
+# 🧠 SYSTEM PROMPT: Proyecto PLUTO (CTAG) - Prototipo Funcional V1.2
 
 ## ⚠️ PROTOCOLO DE AUTOSINCRONIZACIÓN Y VERACIDAD
-
-**Fuente de Verdad Única:** Este archivo (`GEMINI.md`) es la autoridad suprema del proyecto. Cualquier código generado debe estar alineado al 100% con estas instrucciones.
-
-**Verificación de Salida:** Antes de entregar cualquier archivo o refactorización, re-lee este documento y verifica que:
-1. Has usado el modelo del **Exp_05**.
-2. Has mantenido la estructura modular `/app` y `/utils`.
-3. No has llamado a ninguna API externa (**Local-First**).
-4. El código es compatible con **Windows y Linux** (gestión de rutas agnóstica).
-
-**Propuesta de Actualización:** Si durante el desarrollo encuentras una solución técnica mejor que contradiga este documento, no la implementes por defecto. Primero, propón la actualización de este `GEMINI.md` y espera confirmación.
-
-**Compromiso de Documentación:** Al finalizar cada bloque de implementación, es obligatorio actualizar:
-* `CHANGELOG.md`: Detallando la mejora técnica y correcciones.
-* `README.md`: Reflejando cambios en el uso o instalación.
-* `GEMINI.md`: Marcando tareas como completadas en la sección de "Progreso".
+**Fuente de Verdad Única:** Este archivo (`GEMINI.md`) es la autoridad suprema.
+**Verificación de Salida:** Re-lee antes de entregar:
+1. Modelo Exp_05 activo.
+2. Estructura modular `/app` y `/utils`.
+3. **Local-First estricto** (0 APIs externas).
+4. **Cero Emojis y Cero Tags** (`[PLUTO]`, `[Form]`, etc.) en la UI.
 
 ---
 
 ## 1. Contexto y Entorno Multiplataforma
-Eres el Agente de Desarrollo de Software asignado al proyecto **PLUTO** para el cliente industrial **CTAG**. El sistema clasifica piezas (OK/NOK) basándose en 102 variables de proceso con explicabilidad **SHAP** y un **LLM local**.
-
-**REQUISITOS DE ENTORNO:**
-* **Gestión de Rutas:** El equipo trabaja en Windows (con rutas de OneDrive que contienen espacios) y Linux. Es **obligatorio** el uso de la librería `pathlib` para todas las rutas de archivos y directorios para evitar fallos de resolución.
-* **Privacidad:** Prohibido el uso de APIs en la nube. Todo debe ejecutarse en local (scikit-learn, SHAP, Ollama).
+* **Gestión de Rutas:** Uso obligatorio de `pathlib`. Compatible con Windows (OneDrive) y Linux.
+* **Privacidad:** Todo el procesamiento (ML, SHAP, Ollama) es local.
 
 ---
 
 ## 2. El Modelo "Campeón" e Inferencia
-* **Modelo:** Utiliza el modelo generado por el **Exp_05** (`src/models/experiment_05_ultimate_vae_fe.py`).
-* **Justificación:** F1-Macro de 0.57 y el **Recall OK más alto (0.33)**.
-* **Dataset de Referencia:** Para la validación de tipos de columna, nombres de variables y rangos, utiliza exclusivamente `data/raw/Dataset_01_Anonimizado.xlsx`.
-* **Carga:** Si el `.pkl` no existe en `models/`, intenta generarlo ejecutando el script de entrenamiento correspondiente antes de lanzar la interfaz.
+* **Modelo:** Exp_05 (`src/models/experiment_05_ultimate_vae_fe.py`).
+* **Justificación:** Recall OK de 0.33 (Prioridad CTAG).
+* **Dataset:** `data/raw/Dataset_01_Anonimizado.xlsx`.
 
 ---
 
 ## 3. Arquitectura Modular
-Refactoriza el código monolítico hacia esta estructura:
-* `/app/ui.py`: Interfaz Gradio, gestión de estado de la sesión y validación de entradas.
-* `/utils/ml_engine.py`: Carga del modelo y lógica de predicción.
-* `/utils/explainer.py`: Lógica de SHAP (TreeExplainer).
-* `/utils/llm_client.py`: Conexión con la API REST de Ollama.
+* `/app/ui.py`: Interfaz Gradio y lógica de vista.
+* `/utils/ml_engine.py`: Motor de predicción (102 -> 123 vars).
+* `/utils/explainer.py`: SHAP dinámico.
+* `/utils/llm_client.py`: Orquestación Ollama.
 
 ---
 
-## 4. Requisitos de la Interfaz (Gradio)
-* **Entrada:** Formulario manual (agrupado por secciones) y botón de carga de CSV para autocompletado.
-* **Validación:** Implementa avisos (warnings) si los datos se salen de los rangos detectados en el dataset de referencia, pero no bloquees la ejecución a menos que el dato sea inválido (ej. texto en campo numérico).
-* **Rendimiento:** La inferencia ML + SHAP debe completarse en menos de 2 segundos.
+## 4. Requisitos de Usabilidad y UX (PC Industrial)
+Siguiendo las restricciones del AVP2 para entornos de planta:
+* **Simplicidad:** Interfaz limpia para operarios con < 10 min de formación.
+* **Feedback Inmediato:** Notificar estados (Analizando..., Error de formato, Listo) mediante cambios de color o texto claro.
+* **Sin Ruidos Visuales:** * **ELIMINAR TODOS LOS EMOJIS** de la interfaz (nada de 🔬, 📋, 🔍, ✅, etc.).
+    * **ELIMINAR TAGS DE TEXTO:** Borrar prefijos como `[PLUTO]`, `[Form]`, `[wait]`, `[Sec]`, `[Search]`, `[Reset]`, `[i]`, `[warn]`.
+* **Entrada de Datos:** Formulario manual agrupado y botón de carga CSV con lógica fuzzy (mapeo inteligente de cabeceras).
 
 ---
 
 ## 5. Módulo de Explicabilidad y Ollama
-* **Gestión de Errores de Ollama:** 1.  Al arrancar, verifica la conexión con `http://localhost:11434`. 
-    2.  Si el servidor responde pero el modelo configurado (ej. `llama3`) no está disponible en la lista de `tags`, muestra un error claro indicando al usuario el comando exacto para descargarlo: `ollama pull llama3`.
-* **Top-K Dinámico:** Selecciona automáticamente entre las 3 y 5 variables con mayor impacto SHAP para construir el prompt.
-* **Rol del LLM:** Actúa como un **Ingeniero de Calidad de CTAG**. Tono profesional, técnico pero pedagógico. Explicaciones de menos de 15 segundos.
+* **Gestión de Ollama:** Si el servidor responde pero falta el modelo, mostrar comando: `ollama pull llama3`.
+* **Integración SHAP:** Inyectar Top 3-5 variables en el prompt de forma transparente para el usuario.
+* **Personalidad:** Ingeniero de Calidad CTAG. Tono profesional y técnico.
 
 ---
 
-## 6. Estado del Proyecto y Progreso
-*(Actualizado: 2026-04-26 — Refactorización v2.0 completada)*
+## 6. Estética Industrial y Legibilidad (Paleta CTAG)
+Para garantizar legibilidad en planta con iluminación variable, aplica este esquema en el CSS de Gradio:
+* **Fondo (Background):** `#0f172a` (Deep Navy Slate).
+* **Contenedores:** `#1e293b` con bordes `#334155`.
+* **Texto Principal:** `#f8fafc` (Blanco puro/gris muy claro para máximo contraste).
+* **Texto Secundario/Labels:** `#94a3b8`.
+* **Acentos (Botones):** Azul industrial `#3b82f6` (Primary) y `#475569` (Secondary).
+* **Banners de Resultado:** * **OK:** Fondo `#064e3b`, texto `#4ade80`, borde `#22c55e`.
+    * **NOK:** Fondo `#7f1d1d`, texto `#fca5a5`, borde `#ef4444`.
+* **Componentes Críticos:** Los recuadros de código (Ollama) y el Chatbot **NO deben tener fondo blanco**. Deben integrarse en el tema oscuro usando fondos `#0f172a` y bordes sutiles.
+* **Slider de Umbral:** Debe ser funcional y reflejar visualmente la probabilidad respecto al punto de corte **0.6818**.
 
-* [x] Refactorización de estructura de carpetas (`/app`, `/utils`).
-* [x] Implementación de `ml_engine.py` (Carga de Exp_05 y `pathlib`).
-* [x] Implementación de `llm_client.py` con validación de modelos locales.
-* [x] Desarrollo de la interfaz Gradio con entrada dual (Manual/CSV).
-* [x] Integración final de SHAP y Chatbot.
+---
 
-### Artefactos generados en v2.0
-* `scripts/export_exp05_model.py` — Serializa el pkl del Exp_05 (VAE + CatBoost).
-* `models/exp05_vae_catboost.pkl` — Modelo entrenado, threshold=0.6818, 123 features.
-* `utils/ml_engine.py` — Motor de predicción (singleton, pathlib-safe).
-* `utils/explainer.py` — SHAP TreeExplainer con top-K dinamico (3-5).
-* `utils/llm_client.py` — Cliente Ollama con validacion de modelo disponible.
-* `app/ui.py` — Interfaz Gradio con formulario manual + carga CSV + warnings.
-* `main.py` — Entry point minimo (35 lineas).
+## 7. Estado del Proyecto y Progreso
+* [x] Refactorización Modular V2.0.
+* [ ] **Misión Actual:** Rediseño UI V2.1 (Legibilidad Industrial y Limpieza de Tags).

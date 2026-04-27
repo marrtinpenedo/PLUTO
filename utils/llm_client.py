@@ -1,4 +1,4 @@
-﻿"""
+"""
 utils/llm_client.py
 ===================
 Cliente Ollama para el asistente IA de PLUTO.
@@ -55,18 +55,18 @@ def check_ollama(model: str = LLM_MODEL) -> tuple[str, str]:
     except requests.exceptions.ConnectionError:
         return (
             OllamaStatus.SERVER_DOWN,
-            f"[ERR] Ollama no está disponible en `{OLLAMA_BASE_URL}`.\n"
+            f"Ollama no esta disponible en `{OLLAMA_BASE_URL}`.\n"
             "Para activarlo:\n"
             "```bash\n"
             f"ollama pull {model}\n"
             "ollama serve\n"
             "```\n"
-            "Recarga la página tras completar estos pasos.",
+            "Recarga la pagina tras completar estos pasos.",
         )
     except Exception as exc:
         return (
             OllamaStatus.SERVER_DOWN,
-            f"[ERR] Error al conectar con Ollama: {exc}",
+            f"Error al conectar con Ollama: {exc}",
         )
 
     # Servidor activo - verificar si el modelo está disponible
@@ -76,9 +76,9 @@ def check_ollama(model: str = LLM_MODEL) -> tuple[str, str]:
         if model_base not in available:
             return (
                 OllamaStatus.MODEL_MISSING,
-                f"[warn] El servidor Ollama está activo, pero el modelo `{model}` "
-                f"no está instalado.\n\n"
-                f"Descárgalo con:\n"
+                f"El servidor Ollama esta activo, pero el modelo `{model}` "
+                f"no esta instalado.\n\n"
+                f"Descargalo con:\n"
                 f"```bash\n"
                 f"ollama pull {model}\n"
                 f"```",
@@ -186,16 +186,16 @@ def stream_response(
 
     except requests.exceptions.ConnectionError:
         yield (
-            "[ERR] **Ollama no está disponible en `localhost:11434`.**\n\n"
+            "**Ollama no esta disponible en `localhost:11434`.**\n\n"
             "Para activarlo:\n"
             "```bash\n"
             f"ollama pull {model}\n"
             "ollama serve\n"
             "```\n"
-            "Recarga la página tras completar estos pasos."
+            "Recarga la pagina tras completar estos pasos."
         )
     except requests.exceptions.Timeout:
-        yield "[timeout] **Timeout:** El LLM tardó demasiado. Prueba con un modelo más pequeño."
+        yield "**Timeout:** El LLM tardo demasiado. Prueba con un modelo mas pequeno."
     except Exception as exc:
-        yield f"[ERR] Error al conectar con el LLM: {exc}"
+        yield f"Error al conectar con el LLM: {exc}"
 

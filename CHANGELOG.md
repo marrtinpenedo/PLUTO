@@ -1,5 +1,122 @@
 # CHANGELOG - Proyecto PLUTO
 
+## [v3.4] - 2026-04-27 - Bugfix: Eliminacion marcador flotante de umbral + normalizacion CSS
+
+**Scope:** `app/ui.py`
+**Autor:** Antigravity / santipereeira
+
+### Cambios en `app/ui.py`
+
+#### 1. Eliminacion del marcador HTML flotante del slider (Seccion 4 GEMINI.md)
+- **Bug:** El bloque `gr.HTML` con `position:relative` y los divs `.threshold-label`/`.threshold-mark`
+  se descuadraban visualmente, generando superposicion sobre banners y el slider.
+- **Fix:** Eliminado el `gr.HTML(f"<div id='threshold-slider'...")` completo.
+- **Eliminadas clases CSS:** `#threshold-slider`, `.threshold-mark`, `.threshold-label`.
+- **Label del slider suficiente:** `"Probabilidad de NOK  (umbral = 0.6818)"` ya comunica
+  la informacion relevante al operario sin elementos superpuestos.
+- **Slider mantiene** `interactive=False` (medidor de salida, no input).
+
+#### 2. Limpieza de constantes huerfanas
+- **Eliminadas:** `_THRESHOLD = 0.6818` y `_THRESHOLD_PCT = f"..."` que ya no se referenciaban.
+
+#### 3. Normalizacion del string CSS
+- **Convertido:** `CSS = f"""..."""` -> `CSS = """..."""` (ya no habia interpolaciones).
+- **Normalizadas:** todas las llaves dobles `{{`/`}}` a llaves simples `{`/`}` en el CSS.
+- **Resultado:** CSS valido y legible, sin riesgo de errores de format-string.
+
+#### 4. Registro de cambio manual del usuario
+- `gr.Chatbot(..., type="tuples")` añadido por el usuario para compatibilidad Gradio.
+
+---
+
+## [v3.3] - 2026-04-27 - Hotfix UI: Contraste Markdown + Codigo Oscuro + Tags Residuales
+
+
+**Scope:** `app/ui.py`, `utils/llm_client.py`
+**Autor:** Antigravity / santipereeira
+
+### Cambios en `app/ui.py`
+
+#### 1. Contraste de textos Markdown (Seccion 6 GEMINI.md)
+- **Problema:** Titulos y parrafos de `gr.Markdown` se renderizaban oscuros e ilegibles en el tema dark.
+- **Fix:** Nuevas reglas CSS sobre clases `.prose` de Gradio:
+  ```css
+  .prose h1, .prose h2, .prose h3, .prose h4,
+  .prose p, .prose strong, .prose em, .prose span {
+      color: #f8fafc !important;
+  }
+  ```
+- **Resultado:** Texto blanco industrial (#f8fafc) en todos los elementos Markdown.
+
+#### 2. Bloques de codigo integrados al tema oscuro (Seccion 6 GEMINI.md)
+- **Problema:** Los bloques `\`\`\`bash` del chatbot (comandos Ollama) mostraban fondo blanco, rompiendo la estetica industrial.
+- **Fix:** Nuevas reglas CSS:
+  ```css
+  .prose pre, .prose code {
+      background-color: #0f172a !important;
+      color: #e2e8f0 !important;
+      border: 1px solid #334155 !important;
+  }
+  ```
+
+### Cambios en `utils/llm_client.py`
+
+#### 3. Eliminacion de tags residuales (Seccion 4 GEMINI.md)
+- **Tags eliminados:** `[ERR]`, `[warn]`, `[timeout]` de todos los mensajes de error.
+- **Afecta:** `check_ollama()` (3 mensajes) y `stream_response()` (3 mensajes).
+- **Detalle de cambios:**
+  - `"[ERR] Ollama no esta disponible..."` -> `"Ollama no esta disponible..."`
+  - `"[ERR] Error al conectar con Ollama: {exc}"` -> `"Error al conectar con Ollama: {exc}"`
+  - `"[warn] El servidor Ollama esta activo..."` -> `"El servidor Ollama esta activo..."`
+  - `"[ERR] **Ollama no esta disponible**..."` -> `"**Ollama no esta disponible**..."`
+  - `"[timeout] **Timeout:**..."` -> `"**Timeout:**..."`
+  - `"[ERR] Error al conectar con el LLM: {exc}"` -> `"Error al conectar con el LLM: {exc}"`
+
+---
+
+## [v3.2] - 2026-04-27 - Rediseno UI V2.1: Limpieza de Tags + Slider con Marca de Umbral
+
+
+**Scope:** `app/ui.py`, `README.md`
+**Autor:** Antigravity (asistente IA) / santipereeira
+
+### Cambios en `app/ui.py`
+
+#### 1. Eliminacion de todos los tags de texto (Seccion 4 GEMINI.md)
+- **Cambio:** Eliminados todos los prefijos de tag de la interfaz:
+  `[PLUTO]`, `[Form]`, `[Sec]`, `[Search]`, `[Reset]`, `[Results]`, `[Inspect]`, `[Chat]`, `[i]`, `[warn]`, `[ERR]`, `[wait]`.
+- **Afecta:** Cabecera, titulos de secciones, botones, banners OK/NOK/Error/Pending,
+  mensajes del chatbot, warnings de rango, etiquetas de acordeon.
+- **Motivo:** Cumplimiento AVP2 - entorno industrial: interfaz limpia sin ruido visual.
+
+#### 2. Slider vinculado al motor + marca visual del umbral (Seccion 6 GEMINI.md)
+- **El slider ya estaba vinculado:** `result_slider` es output directo de `on_predict`,
+  recibiendo el valor `proba` retornado por `eng.predict()`. No habia desconexion.
+- **Nuevo: marca visual del umbral:**
+  - Constante `_THRESHOLD = 0.6818` y `_THRESHOLD_PCT` para calculo de posicion CSS.
+  - CSS convertido a f-string para inyectar `_THRESHOLD_PCT` en tiempo de arranque.
+  - Clases `#threshold-slider`, `.threshold-mark` (linea vertical amarilla `#fbbf24`)
+    y `.threshold-label` (tooltip con borde amarillo) posicionadas con CSS absoluto
+    en el `{_THRESHOLD_PCT}` del eje horizontal del slider.
+  - HTML auxiliar insertado sobre el `gr.Slider` con las clases de marca.
+- **Label del slider actualizada:** `"P(NOK) -- umbral de corte: 0.6818"`.
+- **elem_id:** `"result_slider"` para facilitar tests e inspeccion.
+
+#### 3. Mejoras CSS de componentes criticos (Seccion 6 GEMINI.md)
+- `.chatbot .message`, `.chatbot .bot`, `.chatbot .user`: fondo `#0f172a` con borde
+  `#1e2d45` (sin fondo blanco). Cumple requisito de integracion en tema oscuro.
+- `#threshold-slider input[type=range]`: `accent-color: #3b82f6`, `cursor: not-allowed`
+  (indicador visual de solo lectura).
+- Version en cabecera actualizada: `v2.0 -> v2.1`.
+
+#### 4. Banners limpios
+- OK-banner: `"PIEZA OK"` (eliminado prefijo redundante `"OK "`).
+- NOK-banner: `"PIEZA NOK"` (eliminado `"[ERR]"`).
+- Pending-banner: `"Pendiente"` (eliminado `"[wait]"`).
+
+---
+
+
 ## [v3.1] - 2026-04-26 - Hotfix UI: ASCII compatibility + CSV header matching
 
 **Scope:** `app/ui.py`, `main.py`, `README.md`

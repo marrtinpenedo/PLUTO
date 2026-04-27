@@ -1,4 +1,4 @@
-﻿"""
+"""
 utils/ml_engine.py
 ==================
 Motor de predicción del Experimento 05 (VAE + KBins + CatBoost).
@@ -87,8 +87,8 @@ class MLEngine:
     def _load(self):
         if not self._model_path.exists():
             raise FileNotFoundError(
-                f"\n[ERR]  Modelo Exp_05 no encontrado: {self._model_path}\n\n"
-                "Para generarlo, ejecuta desde la raíz del proyecto:\n\n"
+                f"\nModelo Exp_05 no encontrado: {self._model_path}\n\n"
+                "Para generarlo, ejecuta desde la raiz del proyecto:\n\n"
                 f"    python {TRAIN_SCRIPT.relative_to(BASE_DIR)}\n\n"
                 "El proceso tarda ~40 s en CPU."
             )

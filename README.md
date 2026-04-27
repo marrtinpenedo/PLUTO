@@ -1,6 +1,6 @@
-# PLUTO - Sistema de Inspección de Calidad Industrial
+# PLUTO - Sistema de Inspeccion de Calidad Industrial
 
-**Proyecto PIIA - Cliente CTAG - v2.0**
+**Proyecto PIIA - Cliente CTAG - v2.1**
 
 Sistema de clasificación de piezas industriales (OK/NOK) a partir de 102 variables de proceso. Integra un modelo de Machine Learning para el veredicto, explicabilidad mediante **SHAP** y diagnóstico en lenguaje natural con un **LLM local (Ollama)**.
 
@@ -66,7 +66,27 @@ Tras auditar 11 experimentos, el **Exp_05** es el modelo de produccion porque:
 
 ---
 
-## Estructura del Proyecto
+## Diseno UI e Industrializacion (v2.1)
+
+Interfaz disenada para operarios de planta con < 10 min de formacion (requisito AVP2):
+
+| Elemento | Especificacion |
+|---|---|
+| Fondo | `#0c1629` (Deep Navy Slate) |
+| Contenedores | `#111c30` con bordes `#1e2d45` |
+| Texto principal | `#f8fafc` - maximo contraste |
+| Texto secundario | `#94a3b8` |
+| Boton primario | `#2563eb` (hover `#1d4ed8`) |
+| Banner OK | Fondo `#064e3b`, texto `#34d399`, borde `#22c55e` |
+| Banner NOK | Fondo `#7f1d1d`, texto `#f87171`, borde `#ef4444` |
+| Slider umbral | Marca visual amarilla `#fbbf24` en `68.18%` del eje |
+| Chatbot/codigo | Fondo `#0f172a` (sin blanco) |
+| Tags en UI | Ninguno - eliminados todos (`[PLUTO]`, `[Form]`, etc.) |
+
+### Slider de probabilidad
+
+El `gr.Slider` `P(NOK)` recibe directamente el valor `proba` de `eng.predict()` como output de `on_predict`.
+Una marca vertical amarilla CSS (`.threshold-mark`) indica visualmente el umbral de corte 0.6818.
 
 ```
 PLUTO/

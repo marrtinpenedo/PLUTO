@@ -1,4 +1,4 @@
-﻿"""
+"""
 app/ui.py
 =========
 Interfaz Gradio de PLUTO - Sistema de Inspección de Calidad Industrial (CTAG).
@@ -45,7 +45,7 @@ CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
 * { font-family: 'Inter', sans-serif !important; box-sizing: border-box; }
 
-/* ─── Banners ─────────────────────────────────────────────────────────────── */
+/* --- Banners ---------------------------------------------------------------- */
 .ok-banner {
     background: linear-gradient(135deg, #022c22 0%, #064e3b 60%, #065f46 100%);
     border: 2px solid #34d399; border-radius: 16px;
@@ -79,24 +79,24 @@ CSS = """
 @keyframes fadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
 @keyframes slamIn { from { opacity:0; transform:scale(1.04); } to { opacity:1; transform:scale(1); } }
 
-/* ─── Header ─────────────────────────────────────────────────────────────── */
+/* --- Header ----------------------------------------------------------------- */
 #pluto-header {
     background: linear-gradient(135deg, #1a2844 0%, #0f172a 100%);
     border: 1px solid #2d4168; border-radius: 16px;
     padding: 22px 32px; margin-bottom: 22px;
 }
 
-/* ─── Stat pill ──────────────────────────────────────────────────────────── */
+/* --- Stat pill -------------------------------------------------------------- */
 .stat-pill {
     background: #162032; border: 1px solid #2d4168;
     border-radius: 10px; padding: 10px 18px;
     text-align: center; min-width: 130px;
 }
 
-/* ─── Separador ──────────────────────────────────────────────────────────── */
+/* --- Separador -------------------------------------------------------------- */
 .section-divider { border: 0; border-top: 1px solid #1e2d42; margin: 28px 0; }
 
-/* ─── Gradio overrides ───────────────────────────────────────────────────── */
+/* --- Gradio overrides ------------------------------------------------------- */
 .gradio-container { max-width: 1500px !important; }
 button.primary { font-weight: 700 !important; letter-spacing: 0.3px; }
 body, .gradio-container { background: #0c1629 !important; color: #cbd5e1 !important; }
@@ -111,11 +111,26 @@ button[class*="primary"]:hover { background: #1d4ed8 !important; }
 button[class*="secondary"] { background: #1e293b !important; color: #cbd5e1 !important; }
 .accordion-header, details summary { background: #162032 !important; color: #7dd3fc !important; }
 .chatbot, .message-wrap { background: #111c30 !important; }
+/* Componentes chatbot y codigo sin fondo blanco */
+.chatbot .message, .chatbot .bot, .chatbot .user {
+    background: #0f172a !important; border: 1px solid #1e2d45 !important;
+}
+/* Contraste texto Markdown: blanco industrial */
+.prose h1, .prose h2, .prose h3, .prose h4,
+.prose p, .prose strong, .prose em, .prose span {
+    color: #f8fafc !important;
+}
+/* Bloques de codigo integrados al tema oscuro */
+.prose pre, .prose code {
+    background-color: #0f172a !important;
+    color: #e2e8f0 !important;
+    border: 1px solid #334155 !important;
+}
 """
 
 PENDING_HTML = """
 <div class="pending-banner">
-    <h1>[wait] Pendiente</h1>
+    <h1>Pendiente</h1>
     <p class="banner-sub">Introduce los valores y pulsa <strong>Comprobar</strong></p>
 </div>"""
 
@@ -155,7 +170,7 @@ def _check_ranges(values: list, eng) -> str:
             continue
         if v < st["min"] or v > st["max"]:
             warnings_list.append(
-                f"[warn] <b>{feat}</b>: valor <b>{v:.4f}</b> fuera del rango "
+                f"<b>{feat}</b>: valor <b>{v:.4f}</b> fuera del rango "
                 f"[{st['min']:.4f}, {st['max']:.4f}]"
             )
     if not warnings_list:
@@ -183,12 +198,12 @@ def build_app() -> gr.Blocks:
         '<span style="color:#f87171;font-weight:700;">* Offline</span>'
     )
 
-    # Pre-computar secciones de acordeón (num + cat juntos)
+    # Pre-computar secciones de acordeon (chunks de SECTION_SZ variables)
     orig_feats = eng.orig_feats      # num_cols + cat_cols
-    sections: list[tuple[str, list[str]]] = []
-    for i in range(0, len(orig_feats), SECTION_SZ):
-        chunk = orig_feats[i: i + SECTION_SZ]
-        sections.append((f"[Sec] {chunk[0]}  ->  {chunk[-1]}", chunk))
+    sections: list[list[str]] = [
+        orig_feats[i: i + SECTION_SZ]
+        for i in range(0, len(orig_feats), SECTION_SZ)
+    ]
 
     # ── Tema ──────────────────────────────────────────────────────────────────
     theme = gr.themes.Base(
@@ -201,7 +216,7 @@ def build_app() -> gr.Blocks:
     # ══════════════════════════════════════════════════════════════════════════
     # Blocks
     # ══════════════════════════════════════════════════════════════════════════
-    with gr.Blocks(theme=theme, css=CSS, title="PLUTO - Inspección de Calidad CTAG") as app:
+    with gr.Blocks(theme=theme, css=CSS, title="PLUTO - Inspeccion de Calidad CTAG") as app:
 
         state_result = gr.State(value={})
 
@@ -211,10 +226,10 @@ def build_app() -> gr.Blocks:
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
             <div>
               <div style="font-size:2.2em;font-weight:900;color:#7dd3fc;letter-spacing:-1px;">
-                [PLUTO] PLUTO
+                PLUTO
               </div>
               <div style="color:#475f7b;font-size:0.875em;margin-top:3px;">
-                Sistema de Inspección de Calidad Industrial - CTAG - v2.0 - Motor: Exp_05 (VAE+CatBoost)
+                Sistema de Inspeccion de Calidad Industrial - CTAG - v2.1 - Motor: Exp_05 (VAE+CatBoost)
               </div>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
@@ -250,17 +265,17 @@ def build_app() -> gr.Blocks:
 
             # ── Columna izquierda: Formulario ─────────────────────────────
             with gr.Column(scale=6, min_width=400):
-                gr.Markdown("### [Form] Variables de Proceso")
+                gr.Markdown("### Variables de Proceso")
                 gr.Markdown(
                     f"Introduce las **{len(orig_feats)} variables** de proceso. "
                     "Los campos muestran las medias del conjunto de entrenamiento. "
-                    "O bien carga un **CSV** para autocompletado automático."
+                    "O bien carga un **CSV** para autocompletado automatico."
                 )
 
                 # Carga CSV
                 with gr.Row():
                     csv_upload = gr.File(
-                        label="[Sec] Cargar CSV (autocompletado)",
+                        label="Cargar CSV (autocompletado)",
                         file_types=[".csv"],
                         scale=1,
                         elem_id="csv_upload",
@@ -270,7 +285,8 @@ def build_app() -> gr.Blocks:
 
                 input_comps: list = []
 
-                for sec_label, sec_feats in sections:
+                for sec_feats in sections:
+                    sec_label = f"{sec_feats[0]}  ->  {sec_feats[-1]}"
                     with gr.Accordion(label=sec_label, open=False):
                         for row_start in range(0, len(sec_feats), GROUP_SIZE):
                             row_feats = sec_feats[row_start: row_start + GROUP_SIZE]
@@ -303,30 +319,32 @@ def build_app() -> gr.Blocks:
 
                 with gr.Row():
                     btn_predict = gr.Button(
-                        "[Search]  Comprobar Calidad",
+                        "Comprobar Calidad",
                         variant="primary", size="lg", scale=3,
                         elem_id="btn_predict",
                     )
                     btn_clear = gr.Button(
-                        "[Reset]  Limpiar",
+                        "Limpiar",
                         variant="secondary", size="lg", scale=1,
                         elem_id="btn_clear",
                     )
 
             # ── Columna derecha: Resultados ───────────────────────────────
             with gr.Column(scale=4, min_width=340):
-                gr.Markdown("### [Results] Resultado de Inspección")
+                gr.Markdown("### Resultado de Inspeccion")
 
                 result_html = gr.HTML(value=PENDING_HTML)
+
                 result_slider = gr.Slider(
                     minimum=0, maximum=1, value=0, step=0.001,
                     label=f"Probabilidad de NOK  (umbral = {eng.threshold:.4f})",
                     interactive=False,
+                    elem_id="result_slider",
                 )
 
                 gr.Markdown(
-                    "#### [Inspect] Top Variables por Impacto SHAP\n"
-                    "_SHAP (+) -> empuja a NOK - SHAP (−) -> empuja a OK_"
+                    "#### Top Variables por Impacto SHAP\n"
+                    "_SHAP (+) empuja a NOK - SHAP (-) empuja a OK_"
                 )
                 shap_table = gr.DataFrame(value=None, label="", interactive=False)
 
@@ -334,14 +352,14 @@ def build_app() -> gr.Blocks:
         # CHATBOT
         # ════════════════════════════════════════════════════════════════════
         gr.HTML('<hr class="section-divider">')
-        gr.Markdown("### [Chat] Asistente IA - Diagnóstico y Análisis")
+        gr.Markdown("### Asistente IA - Diagnostico y Analisis")
         gr.Markdown(
-            "Pregunta al asistente sobre la inspección actual. "
-            "El contexto (veredicto, probabilidad y análisis SHAP) se incluye automáticamente.\n\n"
+            "Pregunta al asistente sobre la inspeccion actual. "
+            "El contexto (veredicto, probabilidad y analisis SHAP) se incluye automaticamente.\n\n"
             + (
-                f"> [i] **Asistente LLM ({LLM_MODEL}):** activo y listo."
+                f"> **Asistente LLM ({LLM_MODEL}):** activo y listo."
                 if ollama_ok else
-                f"> [warn] **Ollama no detectado.** {ollama_msg}"
+                f"> **Ollama no detectado.** {ollama_msg}"
             )
         )
 
@@ -390,13 +408,13 @@ def build_app() -> gr.Blocks:
                 if label == "OK":
                     html = f"""
                     <div class="ok-banner">
-                        <h1>OK PIEZA OK</h1>
+                        <h1>PIEZA OK</h1>
                         <p class="banner-sub">Pieza CONFORME - P(NOK) = {proba:.2%}</p>
                     </div>"""
                 else:
                     html = f"""
                     <div class="nok-banner">
-                        <h1>[ERR] PIEZA NOK</h1>
+                        <h1>PIEZA NOK</h1>
                         <p class="banner-sub">Pieza DEFECTUOSA - P(NOK) = {proba:.2%}</p>
                     </div>"""
 
@@ -415,7 +433,7 @@ def build_app() -> gr.Blocks:
             except Exception as exc:
                 err_html = f"""
                 <div class="pending-banner">
-                    <p style="color:#f87171;font-size:1.1em;">[warn] Error durante la predicción</p>
+                    <p style="color:#f87171;font-size:1.1em;">Error durante la prediccion</p>
                     <p style="color:#94a3b8;font-size:0.9em;">{exc}</p>
                 </div>"""
                 return warn_html, err_html, 0.0, pd.DataFrame(), {}
@@ -480,7 +498,7 @@ def build_app() -> gr.Blocks:
                 
                 return vals # Devuelve la lista exacta para los 102 componentes de Gradio
             except Exception as e:
-                print(f"[ERR] Error en autocompletado CSV: {e}")
+                print(f"Error en autocompletado CSV: {e}")
                 return _default_values(eng)
 
         csv_upload.change(
@@ -497,19 +515,19 @@ def build_app() -> gr.Blocks:
 
             if not result or not result.get("label"):
                 reply = (
-                    "[warn] No hay una predicción activa.\n\n"
-                    "Introduce las variables y pulsa **[Search] Comprobar Calidad** primero."
+                    "No hay una predicción activa.\n\n"
+                    "Introduce las variables y pulsa **Comprobar Calidad** primero."
                 )
-                yield history + [(user_msg, reply)], ""
+                yield history + [{"role": "user", "content": user_msg}, {"role": "assistant", "content": reply}], ""
                 return
 
             status, _ = check_ollama(LLM_MODEL)
             if status != OllamaStatus.SERVER_UP:
                 reply = (
-                    f"[ERR] **Ollama no disponible** en `localhost:11434`.\n\n"
+                    f"**Ollama no disponible** en `localhost:11434`.\n\n"
                     f"Ejecuta:\n```bash\nollama pull {LLM_MODEL}\nollama serve\n```"
                 )
-                yield history + [(user_msg, reply)], ""
+                yield history + [{"role": "user", "content": user_msg}, {"role": "assistant", "content": reply}], ""
                 return
 
             prompt  = build_prompt(
@@ -519,9 +537,15 @@ def build_app() -> gr.Blocks:
                 result.get("top_k", []),
                 user_msg,
             )
-            history = history + [(user_msg, "")]
+            
+            # Añadimos el mensaje del usuario y un placeholder para el asistente
+            history = history + [
+                {"role": "user", "content": user_msg}, 
+                {"role": "assistant", "content": ""}
+            ]
+            
             for partial in stream_response(prompt, model=LLM_MODEL):
-                history[-1] = (user_msg, partial)
+                history[-1]["content"] = partial
                 yield history, ""
 
         btn_send.click(
