@@ -115,9 +115,10 @@ button[class*="secondary"] { background: #1e293b !important; color: #cbd5e1 !imp
 .chatbot .message, .chatbot .bot, .chatbot .user {
     background: #0f172a !important; border: 1px solid #1e2d45 !important;
 }
-/* Contraste texto Markdown: blanco industrial */
+/* Contraste texto Markdown: blanco industrial (Sec 7 GEMINI.md v2.2) */
 .prose h1, .prose h2, .prose h3, .prose h4,
-.prose p, .prose strong, .prose em, .prose span {
+.prose p, .prose strong, .prose em, .prose span,
+.prose li, .prose ul, .prose ol {
     color: #f8fafc !important;
 }
 /* Bloques de codigo integrados al tema oscuro */
@@ -229,7 +230,7 @@ def build_app() -> gr.Blocks:
                 PLUTO
               </div>
               <div style="color:#475f7b;font-size:0.875em;margin-top:3px;">
-                Sistema de Inspeccion de Calidad Industrial - CTAG - v2.1 - Motor: Exp_05 (VAE+CatBoost)
+                Sistema de Inspeccion de Calidad Industrial - CTAG - v2.2 - Motor: Exp_05 (VAE+CatBoost)
               </div>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
@@ -403,7 +404,7 @@ def build_app() -> gr.Blocks:
 
             try:
                 label, proba, df_fe = eng.predict(row)
-                top_k = explainer.explain(df_fe, top_k_range=(3, 5))
+                top_k = explainer.explain(df_fe, top_k_range=(3, 10))
 
                 if label == "OK":
                     html = f"""
@@ -418,14 +419,18 @@ def build_app() -> gr.Blocks:
                         <p class="banner-sub">Pieza DEFECTUOSA - P(NOK) = {proba:.2%}</p>
                     </div>"""
 
-                shap_df = pd.DataFrame([
-                    {
-                        "Variable":           name,
-                        "Valor":              round(val, 4),
-                        "Contribución SHAP":  round(sv, 6),
-                    }
-                    for name, val, sv in top_k
-                ])
+                shap_df = pd.DataFrame(
+                    [
+                        {
+                            "Variable":          name,
+                            "Valor":             round(val, 4),
+                            "SHAP Neto":         round(sv, 6),
+                            "Direccion":         "DEFECTO" if sv > 0 else "CALIDAD",
+                        }
+                        for name, val, sv in top_k
+                    ],
+                    columns=["Variable", "Valor", "SHAP Neto", "Direccion"],
+                )
 
                 state = {"label": label, "proba": proba, "top_k": top_k}
                 return warn_html, html, proba, shap_df, state

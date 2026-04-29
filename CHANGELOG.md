@@ -1,5 +1,113 @@
 # CHANGELOG - Proyecto PLUTO
 
+## [v2.2.1] - 2026-04-29 - Hotfix Sec 5.4: Renombrado industrial VAE corregido
+
+**Scope:** `utils/explainer.py`, `README.md`
+**Autor:** Antigravity / santipereeira
+
+### Motivo
+El GEMINI.md fue actualizado con la terminologia definitiva para las variables VAE:
+- Anterior: `vae_err` -> "Anomalia de Correlacion General", `latent_*` -> "Desviacion de Patron Estructural".
+- Nuevo (Sec 5.4 GEMINI.md): `vae_err` -> **"Indice de Correlacion Global"**, `latent_N` -> **"Patron Estructural N"**.
+
+### Cambios en `utils/explainer.py`
+
+- `_INDUSTRIAL_NAMES["vae_err"]`: `"Anomalia de Correlacion General"` -> `"Indice de Correlacion Global"`.
+- `_industrial_name()`: ahora extrae el numero de dimension `N` del nombre tecnico `latent_N`
+  y devuelve `"Patron Estructural N"` (en lugar de una cadena generica sin numero).
+  - `latent_0`  -> `"Patron Estructural 0"`
+  - `latent_5`  -> `"Patron Estructural 5"`
+  - `latent_11` -> `"Patron Estructural 11"`
+- Docstring del modulo actualizado con los nuevos nombres.
+
+### Cambios en `README.md`
+
+- Tabla de renombrado industrial (Paso 5 de la seccion SHAP) actualizada con ejemplos por dimension.
+- Ejemplo de user prompt del LLM: `"Anomalia de Correlacion General"` -> `"Indice de Correlacion Global"`.
+
+---
+
+## [v2.2] - 2026-04-29 - Explainer Dinamico CTAG + LLM Senior + UI Ajustes
+
+**Scope:** `utils/explainer.py`, `utils/llm_client.py`, `app/ui.py`
+**Autor:** Antigravity / santipereeira
+**GEMINI.md:** Secciones 5, 6 y 7 implementadas segun directiva v2.2.
+
+### Cambios en `utils/explainer.py` (reescritura completa - Sec 5)
+
+#### 5.1 - Agregacion algebraica de variables derivadas
+- **Implementado:** Suma algebraica estricta de los valores SHAP de variables `_bin`
+  al SHAP de su variable fisica base.
+- **Gestion de signos:** Si la base apoya OK (-) y la binarizada apoya NOK (+),
+  se restan algebraicamente. El resultado es el **impacto neto** del sensor fisico.
+- **Identidad:** El nombre resultante es siempre el de la variable fisica original
+  (se elimina el sufijo `_bin`).
+
+#### 5.2 - Filtro de caida relativa del 15%
+- **Regla del 15%:** Tras la agregacion, se descartan variables cuyo |SHAP_neto|
+  sea inferior al 15% del |SHAP_neto| de la variable Top-1.
+- **Excepcion de minimos:** El descarte nunca reduce el listado por debajo de 3 variables.
+
+#### 5.3 - Algoritmo de balanceo Real/VAE (min 3, max 10)
+- **Prioridad 1 (Minimo):** Se garantizan al menos 3 variables, priorizando mayor impacto neto.
+- **Prioridad 2 (Balanceo):** `n_reales >= n_vae`. Si domina VAE, se escanea el ranking
+  descendente buscando exclusivamente variables reales hasta alcanzar el empate.
+- **Gestion de Escasez:** Si se agotan las reales antes del empate, el algoritmo para
+  conservando todas las encontradas (no se inventan ni duplican registros).
+- **Prioridad 3 (Maximo):** El listado nunca supera 10 filas.
+
+#### 5.4 - Renombrado industrial
+- `vae_err`    ->  "Anomalia de Correlacion General"
+- `latent_*`   ->  "Desviacion de Patron Estructural"
+
+---
+
+### Cambios en `utils/llm_client.py` (Sec 6)
+
+#### SYSTEM_PROMPT con rol Ingeniero Senior CTAG
+- **Nuevo:** Constante `SYSTEM_PROMPT` con el rol y reglas de interpretacion.
+  Se inyecta en el campo `"system"` del payload de Ollama (API nativa).
+- **Rol:** Ingeniero Senior de Calidad del proyecto PLUTO / CTAG.
+- **Tono:** Asertivo, tecnico, sin ambiguedades ni expresiones vagas.
+
+#### Umbral Sagrado explicitado
+- **Constante:** `NOK_THRESHOLD = 0.6818` definida a nivel de modulo.
+- **Regla en SYSTEM_PROMPT:** P(NOK) < 0.6818 => OK (absoluto e inamovible).
+
+#### Semantica SHAP inambigua
+- **SHAP (+) => DEFECTO (NOK).** **SHAP (-) => CALIDAD (OK).**
+- Explicitado tanto en el SYSTEM_PROMPT como en la seccion de datos del user-prompt.
+
+#### Tabla ya procesada
+- `build_prompt()` recibe la lista final de `explainer.py` con nombres industriales
+  y valores SHAP netos. La columna `"SHAP_neto"` sustituye a `"SHAP"` crudo.
+- Formato de tabla actualizado con columna `"Direccion"` (DEFECTO / CALIDAD).
+
+---
+
+### Cambios en `app/ui.py` (Sec 7)
+
+#### CSS .prose ampliado
+- Añadidos `.prose li`, `.prose ul`, `.prose ol` a la regla `color: #f8fafc !important;`
+  para garantizar consistencia en listas dentro de bloques Markdown.
+
+#### Tabla SHAP actualizada
+- `gr.DataFrame` recibe ahora columnas explicitas:
+  `["Variable", "Valor", "SHAP Neto", "Direccion"]`.
+- Columna "Direccion" muestra "DEFECTO" / "CALIDAD" sin simbolos ni emojis.
+
+#### Top-K actualizado
+- `explainer.explain(..., top_k_range=(3, 10))` en consonancia con el max=10 de Sec 5.3.
+
+#### Version en cabecera
+- Actualizada de `v2.1` a `v2.2`.
+
+#### Slider
+- Mantenido `interactive=False` (ya correcto desde v3.4).
+- Sin elementos HTML flotantes (ya correcto desde v3.4).
+
+---
+
 ## [v3.4] - 2026-04-27 - Bugfix: Eliminacion marcador flotante de umbral + normalizacion CSS
 
 **Scope:** `app/ui.py`
