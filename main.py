@@ -35,7 +35,7 @@ if __name__ == "__main__":
     application.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,
+        share=True,
         show_error=True,
         favicon_path=None,
     )
