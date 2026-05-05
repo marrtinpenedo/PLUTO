@@ -1,5 +1,19 @@
 # CHANGELOG - Proyecto PLUTO
 
+## [v3.5] - 2026-05-05 - Auditoría y Limpieza Estructural
+
+**Scope:** Estructura de directorios, limpieza de repositorio
+**Autor:** Antigravity / santipereeira
+
+### Cambios Estructurales
+- **Refactorización `src/` -> `research/`:** Se ha renombrado el directorio `src/` a `research/` para clarificar la arquitectura del proyecto. Ahora, todo el código relacionado con la investigación y experimentación (experimentos, notebooks, scripts de EDA) reside en `research/`, separando claramente la fase de laboratorio del código de producción (`app/`, `utils/`, `models/`).
+- **Limpieza de archivos residuales:**
+  - Se eliminó el directorio duplicado `documentation/AVP2/` (la documentación oficial reside en `doc/AVP2/`).
+  - Se eliminaron los directorios `catboost_info/` residuales tanto en la raíz como en `src/models/` y se añadió la exclusión de `catboost_info/` al `.gitignore`.
+  - Se eliminó el archivo `notebook_summary.txt` de la raíz del proyecto, el cual contenía un volcado de salidas de consola sin valor operativo.
+  - Se eliminó el archivo residual `src/utils/helpers.py` que estaba vacío.
+- **Reubicación de Notebooks:** Los notebooks de EDA han sido movidos dentro de la nueva estructura `research/notebooks/`.
+
 ## [v2.2.1] - 2026-04-29 - Hotfix Sec 5.4: Renombrado industrial VAE corregido
 
 **Scope:** `utils/explainer.py`, `README.md`
