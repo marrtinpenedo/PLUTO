@@ -29,4 +29,4 @@ temp/
 
 # Modelos generados: conservar solo el artefacto productivo versionado
 models/*.pkl
-!models/exp05_vae_catboost.pkl
+!models/exp05_vae_catboost_v2.pkl
