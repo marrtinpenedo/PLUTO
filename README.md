@@ -134,7 +134,6 @@ PLUTO/
 +-- notebooks/                       <- Analisis exploratorio (EDA)
 +-- doc/AVP2/                        <- Documentacion de requisitos del cliente
 +-- main.py                          <- Entry point (35 lineas)
-+-- GEMINI.md                        <- Instrucciones maestras para el agente de IA
 +-- CHANGELOG.md                     <- Registro de auditoria y versiones
 ```
 
@@ -240,7 +239,7 @@ Salida:   array de 123 valores SHAP (uno por feature)
           SHAP < 0  =>  la feature empuja la prediccion hacia OK (calidad)
 ```
 
-### Paso 2 - Agregacion algebraica (Seccion 5.1 GEMINI.md)
+### Paso 2 - Agregacion algebraica 
 
 El pipeline genera variables derivadas con sufijo `_bin` para cada variable numerica
 binariazada con `KBinsDiscretizer`. Estas variables derivadas no son independientes de

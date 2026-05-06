@@ -2,7 +2,7 @@
 utils/explainer.py
 ==================
 Modulo de explicabilidad SHAP para el modelo CatBoost del Exp_05.
-Version 2.2 - Implementacion de Seccion 5 GEMINI.md:
+Version 2.2 
 
     5.1  Agregacion algebraica: suma de variables derivadas (_bin) a su base fisica.
     5.2  Filtro de relevancia: descarte relativo al 15% del Top-1 (minimo 3 vars).

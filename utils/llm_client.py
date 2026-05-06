@@ -2,10 +2,8 @@
 utils/llm_client.py
 ===================
 Cliente Ollama para el asistente IA de PLUTO.
-Version 2.2 - Implementacion de Seccion 6 GEMINI.md:
 
     - System Prompt: rol Ingeniero Senior CTAG, tono asertivo y tecnico.
-    - Umbral Sagrado: 0.6818 (hardcoded como constante de dominio).
     - Semantica SHAP: (+) => Defecto, (-) => Calidad. Sin ambiguedad.
     - Tabla procesada: recibe los nombres industriales y valores netos de explainer.py.
 
@@ -29,12 +27,12 @@ OLLAMA_BASE_URL  = "http://localhost:11434"
 LLM_MODEL        = "llama3"      # Cambiar si se usa otro modelo (ej. "mistral")
 REQUEST_TIMEOUT  = 90            # segundos para streaming
 
-# Umbral Sagrado (Sec 6 GEMINI.md): P(NOK) < 0.6818 => OK
-NOK_THRESHOLD = 0.6818
+# Umbral 
+NOK_THRESHOLD = 0.4606  # esto estaría bien cambiarlo para que lo coja del pkl si se puede - Lucas
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# System Prompt del Rol (Sec 6 GEMINI.md)
+# System Prompt del Rol
 # ══════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = (
@@ -123,10 +121,6 @@ def check_ollama(model: str = LLM_MODEL) -> tuple[str, str]:
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Construccion del prompt (Sec 6 GEMINI.md)
-# ══════════════════════════════════════════════════════════════════════════════
-
 def build_prompt(
     label: str,
     proba: float,
@@ -141,7 +135,7 @@ def build_prompt(
     Este user-prompt aporta los datos especificos de la inspeccion actual.
 
     Args:
-        label      : "OK" o "NOK" (resultado del umbral sagrado 0.6818)
+        label      : "OK" o "NOK" (resultado del umbral)
         proba      : probabilidad de NOK (float 0-1)
         threshold  : umbral de decision (debe ser NOK_THRESHOLD = 0.6818)
         top_k      : lista procesada por explainer.py:
@@ -173,7 +167,7 @@ def build_prompt(
         f"Veredicto:             {label}\n"
         f"P(NOK):                {proba:.4f}  ({proba:.2%})\n"
         f"P(OK):                 {1 - proba:.4f}  ({1 - proba:.2%})\n"
-        f"Umbral sagrado:        {threshold:.4f}\n"
+        f"Umbral:        {threshold:.4f}\n"
         f"Decision:              {'P(NOK) >= umbral -> DEFECTO confirmado' if proba >= threshold else 'P(NOK) < umbral -> CONFORMIDAD confirmada'}\n"
         f"\n"
         f"══ ANALISIS SHAP - IMPACTO NETO POR SENSOR (Top {k}) ══\n"

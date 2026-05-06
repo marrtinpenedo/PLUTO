@@ -117,7 +117,7 @@ button[class*="secondary"] { background: #1e293b !important; color: #cbd5e1 !imp
 .chatbot .message, .chatbot .bot, .chatbot .user {
     background: #0f172a !important; border: 1px solid #1e2d45 !important;
 }
-/* Contraste texto Markdown: blanco industrial (Sec 7 GEMINI.md v2.2) */
+/* Contraste texto Markdown: blanco industrial */
 .prose h1, .prose h2, .prose h3, .prose h4,
 .prose p, .prose strong, .prose em, .prose span,
 .prose li, .prose ul, .prose ol {
