@@ -364,7 +364,7 @@ def build_app() -> gr.Blocks:
             )
         )
 
-        chatbot = gr.Chatbot(label="", height=420, elem_id="chatbot")
+        chatbot = gr.Chatbot(label="", height=420, elem_id="chatbot", type="messages")
 
         with gr.Row():
             user_input = gr.Textbox(
