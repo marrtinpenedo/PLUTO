@@ -3,10 +3,30 @@
 venv/
 env/
 
-# Caché de Python
+# Cache de Python
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# cache de catboost
+# Artefactos locales de herramientas
 catboost_info/
+.gradio/
+.ipynb_checkpoints/
+
+# Logs y salidas temporales
+*.log
+tmp/
+temp/
+
+# Certificados y secretos locales
+*.pem
+*.key
+.env
+.env.*
+
+# Modelos generados: conservar solo el artefacto productivo versionado
+models/*.pkl
+!models/exp05_vae_catboost.pkl
