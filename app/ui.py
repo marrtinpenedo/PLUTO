@@ -15,6 +15,7 @@ Motor: Experimento 05 (VAE + CatBoost) - cargado desde `utils/ml_engine.py`.
 """
 
 import warnings
+from html import escape
 from pathlib import Path
 
 import gradio as gr
@@ -152,32 +153,115 @@ def _default_values(eng) -> list:
     return defaults
 
 
-def _check_ranges(values: list, eng) -> str:
+def _is_missing_value(value) -> bool:
+    """True si el valor representa ausencia de dato en un input de Gradio."""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _validation_html(errors: list[str], warnings_list: list[str]) -> str:
+    """Construye el bloque HTML de errores y avisos de validacion."""
+    blocks = []
+    if errors:
+        blocks.append(
+            '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+            '<b>Corrige estos valores antes de predecir:</b><br>'
+            + "<br>".join(errors)
+            + "</div>"
+        )
+    if warnings_list:
+        blocks.append(
+            '<div class="warning-banner">'
+            '<b>Avisos de validacion:</b><br>'
+            + "<br>".join(warnings_list)
+            + "</div>"
+        )
+    return "".join(blocks)
+
+
+def _build_manual_row(values: list, eng) -> tuple[dict, str, bool]:
     """
-    Comprueba si algún valor numérico está fuera del rango del dataset.
-    Devuelve HTML de warning (cadena vacía si todo OK).
+    Valida los inputs manuales y construye la fila interna para el modelo.
+
+    - Numericos ausentes: se imputan con la media de entrenamiento y se avisa.
+    - Numericos invalidos/no finitos: bloquean la prediccion.
+    - Numericos fuera de rango: avisan, pero no bloquean.
+    - Categoricos ausentes: se imputan con la primera categoria conocida.
+    - Categoricos desconocidos: bloquean la prediccion.
     """
-    warnings_list = []
+    row = {}
+    errors: list[str] = []
+    warnings_list: list[str] = []
+
     num_vals = values[: len(eng.num_cols)]
+    cat_vals = values[len(eng.num_cols):]
+
     for feat, val in zip(eng.num_cols, num_vals):
-        if val is None:
-            continue
+        feat_html = escape(str(feat))
         st = eng.col_stats.get(feat, {})
-        if not st:
+        default = float(st.get("mean", 0.0))
+
+        if _is_missing_value(val):
+            row[feat] = default
+            warnings_list.append(
+                f"<b>{feat_html}</b>: valor ausente; se usa la media "
+                f"<b>{default:.4f}</b>."
+            )
             continue
+
         try:
             v = float(val)
         except (TypeError, ValueError):
-            continue
-        if v < st["min"] or v > st["max"]:
-            warnings_list.append(
-                f"<b>{feat}</b>: valor <b>{v:.4f}</b> fuera del rango "
-                f"[{st['min']:.4f}, {st['max']:.4f}]"
+            errors.append(
+                f"<b>{feat_html}</b>: valor numerico invalido "
+                f"(<code>{escape(str(val))}</code>)."
             )
-    if not warnings_list:
-        return ""
-    items = "<br>".join(warnings_list)
-    return f'<div class="warning-banner">{items}</div>'
+            continue
+
+        if not np.isfinite(v):
+            errors.append(
+                f"<b>{feat_html}</b>: el valor debe ser finito "
+                f"(<code>{escape(str(val))}</code>)."
+            )
+            continue
+
+        row[feat] = v
+        if st and (v < st["min"] or v > st["max"]):
+            warnings_list.append(
+                f"<b>{feat_html}</b>: valor <b>{v:.4f}</b> fuera del rango "
+                f"[{st['min']:.4f}, {st['max']:.4f}]."
+            )
+
+    for feat, val in zip(eng.cat_cols, cat_vals):
+        feat_html = escape(str(feat))
+        cats = eng.categories.get(feat, [])
+
+        if _is_missing_value(val):
+            default = cats[0] if cats else ""
+            row[feat] = default
+            warnings_list.append(
+                f"<b>{feat_html}</b>: categoria ausente; se usa "
+                f"<b>{escape(str(default))}</b>."
+            )
+            continue
+
+        text_val = str(val)
+        if cats and text_val not in cats:
+            errors.append(
+                f"<b>{feat_html}</b>: categoria no reconocida "
+                f"(<code>{escape(text_val)}</code>)."
+            )
+            continue
+
+        row[feat] = text_val
+
+    return row, _validation_html(errors, warnings_list), bool(errors)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -388,19 +472,15 @@ def build_app() -> gr.Blocks:
         # ── Predicción ────────────────────────────────────────────────────
         def on_predict(*args):
             values = list(args)
-            warn_html = _check_ranges(values, eng)
+            row, validation_html, has_errors = _build_manual_row(values, eng)
 
-            # Construir dict de features originales
-            row = {}
-            for feat, val in zip(eng.num_cols, values[: len(eng.num_cols)]):
-                try:
-                    row[feat] = float(val)
-                except (TypeError, ValueError):
-                    row[feat] = 0.0
-            for feat, val in zip(eng.cat_cols, values[len(eng.num_cols):]):
-                row[feat] = str(val) if val is not None else (
-                    eng.categories[feat][0] if eng.categories.get(feat) else ""
-                )
+            if has_errors:
+                err_html = """
+                <div class="pending-banner">
+                    <p style="color:#f87171;font-size:1.1em;">Prediccion bloqueada por datos invalidos</p>
+                    <p style="color:#94a3b8;font-size:0.9em;">Corrige los campos indicados antes de comprobar la calidad.</p>
+                </div>"""
+                return validation_html, err_html, 0.0, pd.DataFrame(), {}
 
             try:
                 label, proba, df_fe = eng.predict(row)
@@ -433,7 +513,7 @@ def build_app() -> gr.Blocks:
                 )
 
                 state = {"label": label, "proba": proba, "top_k": top_k}
-                return warn_html, html, proba, shap_df, state
+                return validation_html, html, proba, shap_df, state
 
             except Exception as exc:
                 err_html = f"""
@@ -441,7 +521,7 @@ def build_app() -> gr.Blocks:
                     <p style="color:#f87171;font-size:1.1em;">Error durante la prediccion</p>
                     <p style="color:#94a3b8;font-size:0.9em;">{exc}</p>
                 </div>"""
-                return warn_html, err_html, 0.0, pd.DataFrame(), {}
+                return validation_html, err_html, 0.0, pd.DataFrame(), {}
 
         btn_predict.click(
             fn=on_predict,
@@ -565,4 +645,3 @@ def build_app() -> gr.Blocks:
         )
 
     return app
-

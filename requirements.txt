@@ -3,7 +3,7 @@
 # Recommended Python: >=3.10,<3.13
 # Tested target: Python 3.11.x
 # Interface
-gradio>=5.50.0
+gradio==5.50.0
 # Machine Learning & Anomaly Detection
 lightgbm>=4.1,<5
 xgboost>=2.0,<4
