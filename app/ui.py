@@ -14,6 +14,7 @@ Responsabilidades:
 Motor: Experimento 05 (VAE + CatBoost) - cargado desde `utils/ml_engine.py`.
 """
 
+import tempfile
 import warnings
 from html import escape
 from pathlib import Path
@@ -435,6 +436,37 @@ def build_app() -> gr.Blocks:
                 shap_table = gr.DataFrame(value=None, label="", interactive=False)
 
         # ════════════════════════════════════════════════════════════════════
+        # PREDICCION POR LOTES
+        # ════════════════════════════════════════════════════════════════════
+        gr.HTML('<hr class="section-divider">')
+        gr.Markdown("### Prediccion por Lotes")
+        gr.Markdown(
+            f"Sube un fichero con **multiples filas** para obtener el veredicto de cada pieza. "
+            f"Las columnas ausentes se imputan con la media. "
+            f"Columnas numericas con texto invalido bloquean el lote."
+        )
+
+        with gr.Row():
+            batch_file = gr.File(
+                label="Fichero de lote (CSV o Excel, multifila)",
+                file_types=[".csv", ".xlsx", ".xls"],
+                scale=4,
+                elem_id="batch_file",
+            )
+            btn_batch = gr.Button(
+                "Predecir Lote",
+                variant="primary",
+                size="lg",
+                scale=1,
+                min_width=160,
+                elem_id="btn_batch",
+            )
+
+        batch_status   = gr.HTML(value="", label="")
+        batch_table    = gr.DataFrame(value=None, label="Resultados del lote", interactive=False)
+        batch_download = gr.File(label="Descargar resultados (CSV)", interactive=False, elem_id="batch_download")
+
+        # ════════════════════════════════════════════════════════════════════
         # CHATBOT
         # ════════════════════════════════════════════════════════════════════
         gr.HTML('<hr class="section-divider">')
@@ -662,6 +694,147 @@ def build_app() -> gr.Blocks:
             fn=on_csv_upload,
             inputs=[csv_upload],
             outputs=[range_warnings, file_valid_state, *input_comps],
+        )
+
+        # ── Prediccion por lotes ──────────────────────────────────────────
+        def on_batch_predict(file_obj):
+            """
+            Valida y predice un fichero con N filas.
+            NaN en columnas numericas: se imputa con la media (silencioso).
+            Texto en columna numerica presente: bloquea el lote completo.
+            """
+            _empty = pd.DataFrame(columns=["Fila", "Veredicto", "P(NOK)", "P(OK)"])
+
+            if file_obj is None:
+                return (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Sin fichero.</b> Carga un CSV o Excel antes de predecir el lote.'
+                    '</div>',
+                    _empty, None,
+                )
+
+            # 1. Leer fichero completo
+            try:
+                path = Path(file_obj.name)
+                ext  = path.suffix.lower()
+                df_raw = pd.read_excel(path) if ext in (".xlsx", ".xls") else pd.read_csv(path)
+            except Exception as e:
+                return (
+                    f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    f'<b>Fichero no valido.</b> No se pudo leer el contenido.<br>'
+                    f'<code style="font-size:0.85em;">{escape(str(e))}</code></div>',
+                    _empty, None,
+                )
+
+            if df_raw.empty:
+                return (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Fichero vacio.</b> El archivo no contiene filas de datos.</div>',
+                    _empty, None,
+                )
+
+            # 2. Normalizacion de cabeceras
+            raw_cols  = {str(c).strip().lower(): str(c).strip() for c in df_raw.columns}
+            orig_cols = eng.num_cols + eng.cat_cols
+
+            if not any(f.strip().lower() in raw_cols for f in orig_cols):
+                return (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Fichero no reconocido.</b> Ninguna columna coincide con las '
+                    'variables del modelo. Comprueba que el fichero es de inspeccion CTAG.</div>',
+                    _empty, None,
+                )
+
+            # 3. Validacion estricta: texto en numericas presentes (NaN se tolera)
+            invalid_info: list[str] = []
+            for feat in eng.num_cols:
+                if len(invalid_info) >= 11:
+                    break
+                feat_clean = feat.strip().lower()
+                if feat_clean not in raw_cols:
+                    continue
+                for row_idx, val in df_raw[raw_cols[feat_clean]].items():
+                    if pd.isna(val):
+                        continue
+                    try:
+                        fv = float(val)
+                        if not np.isfinite(fv):
+                            raise ValueError()
+                    except (ValueError, TypeError):
+                        invalid_info.append(
+                            f"Fila {int(row_idx)+1}, columna <b>{escape(feat)}</b>: "
+                            f"<code>{escape(str(val))}</code>"
+                        )
+                        if len(invalid_info) >= 10:
+                            invalid_info.append("... (primeros 10 errores)")
+                            break
+
+            if invalid_info:
+                return (
+                    f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    f'<b>Lote invalido:</b> columnas numericas con valores no numericos.<br><br>'
+                    f'{"<br>".join(invalid_info)}</div>',
+                    _empty, None,
+                )
+
+            # 4. Alinear DataFrame con las 102 variables del motor
+            X_aligned = pd.DataFrame(index=range(len(df_raw)))
+            for feat in orig_cols:
+                feat_clean = feat.strip().lower()
+                if feat_clean in raw_cols:
+                    X_aligned[feat] = df_raw[raw_cols[feat_clean]].values
+                elif feat in eng.num_cols:
+                    X_aligned[feat] = eng.col_stats.get(feat, {}).get("mean", 0.0)
+                else:
+                    cats = eng.categories.get(feat, [])
+                    X_aligned[feat] = cats[0] if cats else ""
+
+            # 5. Transformar y predecir el lote completo de una sola vez
+            try:
+                df_fe_batch = eng._transform(X_aligned)
+                probas      = eng._model.predict_proba(df_fe_batch)[:, 1]
+                labels      = ["NOK" if p >= eng.threshold else "OK" for p in probas]
+            except Exception as e:
+                return (
+                    f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    f'<b>Error en prediccion:</b> {escape(str(e))}</div>',
+                    _empty, None,
+                )
+
+            # 6. Tabla de resultados
+            n_total = len(labels)
+            n_nok   = sum(1 for lbl in labels if lbl == "NOK")
+            n_ok    = n_total - n_nok
+            results_df = pd.DataFrame({
+                "Fila":      list(range(1, n_total + 1)),
+                "Veredicto": labels,
+                "P(NOK)":    [round(float(p), 4) for p in probas],
+                "P(OK)":     [round(float(1 - p), 4) for p in probas],
+            })
+
+            status_html = (
+                '<div class="warning-banner" '
+                'style="border-color:#34d399;color:#34d399;background:#022c22;">'
+                f'<b>Lote procesado:</b> {n_total} piezas &nbsp;|&nbsp; '
+                f'OK: {n_ok} ({n_ok/n_total:.1%}) &nbsp;|&nbsp; '
+                f'NOK: {n_nok} ({n_nok/n_total:.1%})'
+                '</div>'
+            )
+
+            # 7. CSV temporal para descarga
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix="_pluto_lote.csv", delete=False, encoding="utf-8"
+            )
+            results_df.to_csv(tmp.name, index=False)
+            tmp.close()
+
+            return status_html, results_df, tmp.name
+
+        btn_batch.click(
+            fn=on_batch_predict,
+            inputs=[batch_file],
+            outputs=[batch_status, batch_table, batch_download],
+            show_progress="full",
         )
 
         # ── Chat ──────────────────────────────────────────────────────────
