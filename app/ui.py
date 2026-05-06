@@ -357,11 +357,11 @@ def build_app() -> gr.Blocks:
                     "O bien carga un **CSV** para autocompletado automatico."
                 )
 
-                # Carga CSV
+                # Carga de fichero (CSV o Excel)
                 with gr.Row():
                     csv_upload = gr.File(
-                        label="Cargar CSV (autocompletado)",
-                        file_types=[".csv"],
+                        label="Cargar fichero (CSV o Excel)",
+                        file_types=[".csv", ".xlsx", ".xls"],
                         scale=1,
                         elem_id="csv_upload",
                     )
@@ -542,30 +542,35 @@ def build_app() -> gr.Blocks:
                      *input_comps],
         )
 
-        # ── CSV autocompletado ────────────────────────────────────────────
+        # ── Autocompletado desde fichero (CSV o Excel) ───────────────────
         def on_csv_upload(file_obj):
             if file_obj is None:
                 return _default_values(eng)
-            
+
             try:
-                # 1. Carga con detección básica
-                df_csv = pd.read_csv(file_obj.name)
-                if df_csv.empty: return _default_values(eng)
-                
-                # 2. Normalización de cabeceras del CSV (limpieza de espacios y minúsculas)
-                # Esto permite que "Temperatura " o "TEMPERATURA" funcionen igual.
+                # 1. Seleccionar lector según extensión del fichero subido
+                path = Path(file_obj.name)
+                ext  = path.suffix.lower()
+                if ext in (".xlsx", ".xls"):
+                    df_csv = pd.read_excel(path, nrows=1)   # solo primera fila
+                else:
+                    df_csv = pd.read_csv(path, nrows=1)     # .csv (defecto)
+
+                if df_csv.empty:
+                    return _default_values(eng)
+
+                # 2. Normalización de cabeceras (strip + lowercase)
+                # Permite que "Temperatura " o "TEMPERATURA" funcionen igual.
                 raw_cols = {str(c).strip().lower(): str(c).strip() for c in df_csv.columns}
                 row_data = df_csv.iloc[0]
-                
+
                 vals = []
-                # 3. Mapeo hacia las variables originales definidas en el motor (102 variables)
-                for feat in eng.orig_feats: # num_cols + cat_cols
+                # 3. Mapeo hacia las 102 variables originales del motor
+                for feat in eng.orig_feats:  # num_cols + cat_cols
                     feat_clean = feat.strip().lower()
-                    
-                    # Buscamos la mejor coincidencia en el CSV subido
+
                     if feat_clean in raw_cols:
                         val = row_data[raw_cols[feat_clean]]
-                        # Validación de tipo según si la columna es numérica o no
                         if feat in eng.num_cols:
                             try:
                                 vals.append(float(val))
@@ -574,16 +579,17 @@ def build_app() -> gr.Blocks:
                         else:
                             vals.append(str(val))
                     else:
-                        # Si falta la columna, fallback a la media o primera categoría
+                        # Columna ausente → media (numérica) o primera categoría
                         if feat in eng.num_cols:
                             vals.append(round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4))
                         else:
                             cats = eng.categories.get(feat, [])
                             vals.append(cats[0] if cats else None)
-                
-                return vals # Devuelve la lista exacta para los 102 componentes de Gradio
+
+                return vals  # lista exacta de 102 valores para los componentes Gradio
+
             except Exception as e:
-                print(f"Error en autocompletado CSV: {e}")
+                print(f"Error en autocompletado de fichero: {e}")
                 return _default_values(eng)
 
         csv_upload.change(
