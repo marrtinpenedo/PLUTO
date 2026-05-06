@@ -8,7 +8,7 @@ Version 2.2 - Implementacion de Seccion 5 GEMINI.md:
     5.2  Filtro de relevancia: descarte relativo al 15% del Top-1 (minimo 3 vars).
     5.3  Balanceo dinamico Real/VAE: min=3, max=10, siempre Reales >= VAE.
     5.4  Renombrado industrial: vae_err -> "Indice de Correlacion Global",
-         latent_N -> "Patron Estructural N" (N = numero de dimension latente).
+         vae_lN -> "Patron Estructural N" (N = numero de dimension latente).
 """
 
 import warnings
@@ -25,9 +25,8 @@ warnings.filterwarnings("ignore")
 
 
 # ── Nombres industriales ──────────────────────────────────────────────────────
-# Sec 5.4 GEMINI.md v2.2:
 #   vae_err      -> "Indice de Correlacion Global"
-#   latent_N     -> "Patron Estructural N"  (N = numero de dimension latente)
+#   vae_lN     -> "Patron Estructural N"  (N = numero de dimension latente)
 
 _INDUSTRIAL_NAMES: dict[str, str] = {
     "vae_err": "Indice de Correlacion Global",
@@ -39,15 +38,15 @@ def _industrial_name(feat: str) -> str:
 
     Casos:
         vae_err     -> "Indice de Correlacion Global"
-        latent_5    -> "Patron Estructural 5"
-        latent_11   -> "Patron Estructural 11"
+        vae_l5    -> "Patron Estructural 5"
+        vae_l11   -> "Patron Estructural 11"
         <cualquier otro>  -> nombre original sin modificacion
     """
     if feat in _INDUSTRIAL_NAMES:
         return _INDUSTRIAL_NAMES[feat]
-    if feat.startswith("latent_"):
-        # Extraer el numero de dimension (ej. "latent_5" -> "5")
-        suffix = feat[len("latent_"):]
+    if feat.startswith("vae_l"):
+        # Extraer el numero de dimension (ej. "vae_l5" -> "5")
+        suffix = feat[len("vae_l"):]
         n = suffix if suffix.isdigit() else suffix
         return f"Patron Estructural {n}"
     return feat
@@ -55,10 +54,10 @@ def _industrial_name(feat: str) -> str:
 
 # ── Clasificacion de variables ────────────────────────────────────────────────
 
-_VAE_PREFIXES = ("vae_err", "latent_")
+_VAE_PREFIXES = ("vae_err", "vae_l")
 
 def _is_vae(feat: str) -> bool:
-    """True si la variable es sintetica VAE (vae_err o latent_*)."""
+    """True si la variable es sintetica VAE (vae_err o vae_l*)."""
     return feat.startswith(_VAE_PREFIXES)
 
 
