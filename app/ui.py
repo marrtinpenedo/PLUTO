@@ -303,7 +303,8 @@ def build_app() -> gr.Blocks:
     # ══════════════════════════════════════════════════════════════════════════
     with gr.Blocks(theme=theme, css=CSS, title="PLUTO - Inspeccion de Calidad CTAG") as app:
 
-        state_result = gr.State(value={})
+        state_result     = gr.State(value={})
+        file_valid_state = gr.State(value=False)   # True solo cuando hay fichero valido cargado
 
         # ── CABECERA ──────────────────────────────────────────────────────────
         gr.HTML(f"""
@@ -470,7 +471,17 @@ def build_app() -> gr.Blocks:
         # ════════════════════════════════════════════════════════════════════
 
         # ── Predicción ────────────────────────────────────────────────────
-        def on_predict(*args):
+        def on_predict(file_valid, *args):
+            # Guardia: sin fichero valido no hay prediccion
+            if not file_valid:
+                blocked_html = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Prediccion no disponible.</b> '
+                    'Carga un fichero CSV o Excel valido antes de comprobar la calidad.'
+                    '</div>'
+                )
+                return "", blocked_html, 0.0, pd.DataFrame(), {}
+
             values = list(args)
             row, validation_html, has_errors = _build_manual_row(values, eng)
 
@@ -525,7 +536,7 @@ def build_app() -> gr.Blocks:
 
         btn_predict.click(
             fn=on_predict,
-            inputs=input_comps,
+            inputs=[file_valid_state, *input_comps],
             outputs=[range_warnings, result_html, result_slider, shap_table, state_result],
             show_progress="full",
         )
@@ -533,69 +544,124 @@ def build_app() -> gr.Blocks:
         # ── Limpiar ───────────────────────────────────────────────────────
         def on_clear():
             defs = _default_values(eng)
-            return ("", PENDING_HTML, 0.0, pd.DataFrame(), {}, *defs)
+            # False: el operario debe volver a cargar fichero tras limpiar
+            return ("", PENDING_HTML, 0.0, pd.DataFrame(), {}, False, *defs)
 
         btn_clear.click(
             fn=on_clear,
             inputs=[],
             outputs=[range_warnings, result_html, result_slider, shap_table, state_result,
-                     *input_comps],
+                     file_valid_state, *input_comps],
         )
 
-        # ── Autocompletado desde fichero (CSV o Excel) ───────────────────
+        # ── Autocompletado desde fichero (CSV o Excel) con validación estricta ──
         def on_csv_upload(file_obj):
-            if file_obj is None:
-                return _default_values(eng)
+            """
+            Valida el fichero antes de autofill.
+            Solo pone file_valid_state=True si el fichero se leyó correctamente
+            Y todas las columnas numéricas presentes tienen valores parseables.
+            Columnas ausentes del fichero se imputan silenciosamente (subset valido).
+            """
+            _no_warn   = ""     # sin aviso
+            _defaults  = _default_values(eng)
 
+            if file_obj is None:
+                return _no_warn, False, *_defaults
+
+            # 1. Leer el fichero (error de lectura = bloqueo)
             try:
-                # 1. Seleccionar lector según extensión del fichero subido
                 path = Path(file_obj.name)
                 ext  = path.suffix.lower()
                 if ext in (".xlsx", ".xls"):
-                    df_csv = pd.read_excel(path, nrows=1)   # solo primera fila
+                    df_csv = pd.read_excel(path, nrows=1)
                 else:
-                    df_csv = pd.read_csv(path, nrows=1)     # .csv (defecto)
-
-                if df_csv.empty:
-                    return _default_values(eng)
-
-                # 2. Normalización de cabeceras (strip + lowercase)
-                # Permite que "Temperatura " o "TEMPERATURA" funcionen igual.
-                raw_cols = {str(c).strip().lower(): str(c).strip() for c in df_csv.columns}
-                row_data = df_csv.iloc[0]
-
-                vals = []
-                # 3. Mapeo hacia las 102 variables originales del motor
-                for feat in eng.orig_feats:  # num_cols + cat_cols
-                    feat_clean = feat.strip().lower()
-
-                    if feat_clean in raw_cols:
-                        val = row_data[raw_cols[feat_clean]]
-                        if feat in eng.num_cols:
-                            try:
-                                vals.append(float(val))
-                            except (ValueError, TypeError):
-                                vals.append(round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4))
-                        else:
-                            vals.append(str(val))
-                    else:
-                        # Columna ausente → media (numérica) o primera categoría
-                        if feat in eng.num_cols:
-                            vals.append(round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4))
-                        else:
-                            cats = eng.categories.get(feat, [])
-                            vals.append(cats[0] if cats else None)
-
-                return vals  # lista exacta de 102 valores para los componentes Gradio
-
+                    df_csv = pd.read_csv(path, nrows=1)
             except Exception as e:
-                print(f"Error en autocompletado de fichero: {e}")
-                return _default_values(eng)
+                err_html = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Fichero no valido.</b> No se pudo leer el contenido.<br>'
+                    f'<code style="font-size:0.85em;">{escape(str(e))}</code>'
+                    '</div>'
+                )
+                return err_html, False, *_defaults
+
+            # 2. Fichero vacío
+            if df_csv.empty:
+                err_html = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Fichero vacio.</b> El archivo no contiene filas de datos.'
+                    '</div>'
+                )
+                return err_html, False, *_defaults
+
+            # 3. Normalización de cabeceras
+            raw_cols       = {str(c).strip().lower(): str(c).strip() for c in df_csv.columns}
+            row_data       = df_csv.iloc[0]
+            vals: list     = []
+            invalid_cols: list = []   # numéricas presentes con valor no parseable
+            matched_count  = 0
+
+            for feat in eng.orig_feats:  # num_cols + cat_cols
+                feat_clean = feat.strip().lower()
+
+                if feat_clean in raw_cols:
+                    matched_count += 1
+                    val = row_data[raw_cols[feat_clean]]
+
+                    if feat in eng.num_cols:
+                        try:
+                            parsed = float(val)
+                            if not np.isfinite(parsed):
+                                raise ValueError("no finito")
+                            vals.append(parsed)
+                        except (ValueError, TypeError):
+                            # Columna presente pero con valor inválido → registrar
+                            invalid_cols.append(
+                                f"<b>{escape(feat)}</b> "
+                                f"(valor: <code>{escape(str(val))}</code>)"
+                            )
+                            # Placeholder; si hay invalidos el fichero se bloquea
+                            vals.append(round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4))
+                    else:
+                        vals.append(str(val))
+                else:
+                    # Columna ausente → imputa silenciosamente (subset valido)
+                    if feat in eng.num_cols:
+                        vals.append(round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4))
+                    else:
+                        cats = eng.categories.get(feat, [])
+                        vals.append(cats[0] if cats else None)
+
+            # 4. Evaluación final del fichero
+            if matched_count == 0:
+                err_html = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Fichero no reconocido.</b> Ninguna columna coincide con las '
+                    'variables del modelo. Comprueba que el fichero corresponde a '
+                    'datos de inspeccion CTAG.'
+                    '</div>'
+                )
+                return err_html, False, *_defaults
+
+            if invalid_cols:
+                cols_list = "<br>".join(invalid_cols)
+                n_inv = len(invalid_cols)
+                err_html = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    f'<b>Fichero invalido:</b> {n_inv} columna(s) numerica(s) '
+                    f'contienen valores no numericos. Corrige el fichero y vuelve a subirlo.<br><br>'
+                    f'{cols_list}'
+                    '</div>'
+                )
+                return err_html, False, *_defaults
+
+            # 5. Fichero limpio → autofill habilitado
+            return _no_warn, True, *vals
 
         csv_upload.change(
             fn=on_csv_upload,
             inputs=[csv_upload],
-            outputs=input_comps,
+            outputs=[range_warnings, file_valid_state, *input_comps],
         )
 
         # ── Chat ──────────────────────────────────────────────────────────
