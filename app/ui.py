@@ -503,7 +503,7 @@ def build_app() -> gr.Blocks:
                     [
                         {
                             "Variable":          name,
-                            "Valor":             round(val, 4),
+                            "Valor":             round(val, 4) if isinstance(val, (int, float)) else val,
                             "SHAP Neto":         round(sv, 6),
                             "Direccion":         "DEFECTO" if sv > 0 else "CALIDAD",
                         }

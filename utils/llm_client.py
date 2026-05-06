@@ -156,11 +156,17 @@ def build_prompt(
     k = len(top_k)
 
     # Tabla SHAP procesada (ya viene con nombres industriales y valores netos)
-    feat_lines = "\n".join(
-        f"  {name:<45s}  valor={val:>10.4f}   SHAP_neto={sv:>+.5f}  "
-        f"({'DEFECTO' if sv > 0 else 'CALIDAD'})"
-        for name, val, sv in top_k
-    )
+    lines = []
+    for name, val, sv in top_k:
+        # Si es texto (string), lo formateamos como texto. Si es numero, con 4 decimales.
+        val_str = f"{val:>10}" if isinstance(val, str) else f"{val:>10.4f}"
+        
+        lines.append(
+            f"  {name:<45s}  valor={val_str}   SHAP_neto={sv:>+.5f}  "
+            f"({'DEFECTO' if sv > 0 else 'CALIDAD'})"
+        )
+        
+    feat_lines = "\n".join(lines)
 
     return (
         f"══ DATOS DE LA INSPECCION ══\n"
