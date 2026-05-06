@@ -14,15 +14,6 @@ garantizando la privacidad industrial de CTAG sin depender de APIs en la nube.
 
 ## Inicio Rapido
 
-### Requisitos previos
-
-| Requisito | Version minima | Notas |
-|---|---|---|
-| Python | 3.10+ | Recomendado 3.11 o 3.12 |
-| Ollama | cualquiera | Debe estar ejecutando `ollama serve` |
-| RAM | 8 GB min | 16 GB recomendado para el LLM |
-| OS | Windows / Linux | Rutas gestionadas con `pathlib` |
-
 ### Instalacion
 
 ```bash
@@ -36,18 +27,18 @@ pip install -r requirements.txt
 
 # 3. Descargar el modelo de lenguaje (solo la primera vez)
 ollama pull llama3
-ollama serve                    # dejar en ejecucion en otra terminal
+ollama run  llama3              # puede cerrarse mientras no se haga un stop
 ```
 
 ### Generar el modelo (primera vez)
 
-Si `models/exp05_vae_catboost.pkl` no existe aun:
+Si `models/exp05_vae_catboost_v2.pkl` no existe aun:
 
 ```bash
 python scripts/export_exp05_model.py
 ```
 
-Tiempo estimado: ~32 s en CPU. El script entrena el pipeline completo
+El script entrena el pipeline completo
 (VAE + CatBoost) sobre el dataset de referencia y serializa el artefacto.
 
 ### Arrancar la interfaz
@@ -120,18 +111,18 @@ PLUTO/
 +-- scripts/
 |   +-- export_exp05_model.py        <- Script one-shot para generar el pkl (~32 s)
 |
-+-- src/models/
++-- research/models/
 |   +-- experiment_05_ultimate_vae_fe.py  <- Codigo fuente del modelo campeon
 |   +-- experiment_01..11_*.py            <- Experimentos comparativos
 |   +-- run_all_experiments.py            <- Runner de comparacion de experimentos
 |
 +-- models/
-|   +-- exp05_vae_catboost.pkl       <- ARTEFACTO EN PRODUCCION (threshold=0.6818)
+|   +-- exp05_vae_catboost.pkl       <- ARTEFACTO DEPRECATED (threshold=0.6818)
+    +-- exp05_vae_catboost_v2.pkl       <- ARTEFACTO EN PRODUCCIÓN (threshold=0.4606)
 |
 +-- data/
 |   +-- raw/Dataset_01_Anonimizado.xlsx   <- Dataset de referencia (RGPD-safe)
 |
-+-- notebooks/                       <- Analisis exploratorio (EDA)
 +-- doc/AVP2/                        <- Documentacion de requisitos del cliente
 +-- main.py                          <- Entry point (35 lineas)
 +-- CHANGELOG.md                     <- Registro de auditoria y versiones
@@ -139,7 +130,7 @@ PLUTO/
 
 ---
 
-## Modelo Campeon: Experimento 05 (VAE + CatBoost)
+## Modelo en producción: Experimento 05 (VAE + CatBoost)
 
 ### Metricas en holdout 20% (datos nunca vistos durante entrenamiento)
 
@@ -175,11 +166,10 @@ Entrada (102 vars originales)
    |
    +-- VAE Encoder (PyTorch, ajustado solo en train)
    |       -> vae_err  (error de reconstruccion)
-   |       -> latent_0 ... latent_11  (12 dimensiones latentes)
+   |       -> vae_l0 ... vae_l11  (12 dimensiones latentes)
    |
    -> 123 features totales -> CatBoostClassifier
-                                  -> P(NOK) -> umbral 0.6818 -> OK / NOK
-```
+                                  -> P(NOK) -> umbral
 
 ---
 
@@ -193,7 +183,8 @@ Entrada (102 vars originales)
 - Los campos numericos muestran el rango `[min, max]` del dataset de referencia.
 
 **Carga CSV**
-- El operario puede subir un fichero CSV con cualquier subconjunto de las 102 variables.
+- El operario puede subir un fichero CSV con cualquier subconjunto de las 102 variables (se recomienda mandar todas las variables). 
+- El operario puede subir un batch de piezas para recibir sus predicciones sin explicación.
 - Matching tolerante: insensible a mayusculas/minusculas y espacios en las cabeceras.
 - Las columnas ausentes se imputan con la media (numericas) o la primera categoria.
 
@@ -208,8 +199,8 @@ pero el operario es informado del valor anomalo.
 - `ml_engine.predict(row)` ejecuta el pipeline completo: scaler, bins, VAE, CatBoost.
 - Devuelve `(label, proba, df_fe)` donde `df_fe` contiene las 123 features transformadas.
 - El banner cambia de color segun el umbral sagrado **0.6818**:
-  - `P(NOK) >= 0.6818` -> **Banner rojo NOK** (pieza DEFECTUOSA).
-  - `P(NOK) < 0.6818`  -> **Banner verde OK** (pieza CONFORME).
+  - `P(NOK) >= umbral` -> **Banner rojo NOK** (pieza DEFECTUOSA).
+  - `P(NOK) < umbral`  -> **Banner verde OK** (pieza CONFORME).
 
 ### 4. Tabla SHAP Neta (v2.2)
 
@@ -418,28 +409,7 @@ Interfaz disenada para operarios de planta con menos de 10 minutos de formacion
 | Umbral NOK | Ambar Alerta | `#fbbf24` |
 | Chatbot/codigo | Navy Profundo | `#0f172a` |
 
-### Reglas UX (requisito AVP2)
 
-- **Cero emojis** en toda la interfaz.
-- **Cero tags de texto** (`[PLUTO]`, `[Form]`, `[ERR]`, `[wait]`, etc.).
-- Slider `P(NOK)` en modo `interactive=False` (es un indicador de salida, no un input).
-- Sin elementos HTML flotantes que se superpongan a otros componentes.
-- Feedback de estado inmediato: banners de color semaforo (verde/rojo) segun el umbral.
-
-### Elemento slider
-
-```
-0%                    68.18%                  100%
-|---------------------|------------------------|
-                       ^
-                  Umbral NOK (0.6818)
-                  comunicado via label del slider
-```
-
-El label del slider informa directamente: `"Probabilidad de NOK (umbral = 0.6818)"`.
-No se usan elementos HTML flotantes (eliminados en v3.4).
-
----
 
 ## Comparativa de Experimentos
 
@@ -456,8 +426,6 @@ No se usan elementos HTML flotantes (eliminados en v3.4).
 | Exp_09 | SupMin+TabM | 0.68 | 0.51 | 0.17 | 0.85 | 0.11 | 221s |
 | Exp_10 | CleanLab+Stack | 0.69 | 0.51 | 0.16 | 0.86 | 0.09 | 43s |
 | Exp_11 | Ultimate Hybrid | 0.69 | 0.52 | 0.19 | 0.86 | 0.11 | 730s |
-
-*Exp_07 supera el timeout de 20 min. Ejecutar individualmente.
 
 **Criterio de seleccion:** Recall OK es la metrica prioritaria para CTAG.
 Exp_05 es el maximo absoluto en Recall OK con un tiempo de entrenamiento razonable (40s).
