@@ -306,6 +306,7 @@ def build_app() -> gr.Blocks:
 
         state_result     = gr.State(value={})
         file_valid_state = gr.State(value=False)   # True solo cuando hay fichero valido cargado
+        batch_state      = gr.State(value=None)    # DataFrame de resultados del lote activo
 
         # ── CABECERA ──────────────────────────────────────────────────────────
         gr.HTML(f"""
@@ -465,6 +466,26 @@ def build_app() -> gr.Blocks:
         batch_status   = gr.HTML(value="", label="")
         batch_table    = gr.DataFrame(value=None, label="Resultados del lote", interactive=False)
         batch_download = gr.File(label="Descargar resultados (CSV)", interactive=False, elem_id="batch_download")
+
+        gr.Markdown(
+            "Consulta al asistente sobre los resultados del lote. "
+            "Puedes preguntar por piezas concretas, estadisticas o patrones."
+        )
+        batch_chatbot = gr.Chatbot(label="", height=320, elem_id="batch_chatbot", type="messages")
+        with gr.Row():
+            batch_user_input = gr.Textbox(
+                placeholder=(
+                    "Ej: ¿Cuantas piezas son NOK? "
+                    "¿Que pieza tiene mayor probabilidad de defecto? "
+                    "Describe la pieza 3."
+                ),
+                label="", lines=2, scale=9,
+                show_label=False, elem_id="batch_chat_input",
+            )
+            btn_batch_send = gr.Button(
+                "Enviar ->", variant="primary",
+                scale=1, min_width=100, elem_id="btn_batch_send",
+            )
 
         # ════════════════════════════════════════════════════════════════════
         # CHATBOT
@@ -828,16 +849,160 @@ def build_app() -> gr.Blocks:
             results_df.to_csv(tmp.name, index=False)
             tmp.close()
 
-            return status_html, results_df, tmp.name
+            return status_html, results_df, tmp.name, results_df, []
 
         btn_batch.click(
             fn=on_batch_predict,
             inputs=[batch_file],
-            outputs=[batch_status, batch_table, batch_download],
+            outputs=[batch_status, batch_table, batch_download, batch_state, batch_chatbot],
             show_progress="full",
         )
 
-        # ── Chat ──────────────────────────────────────────────────────────
+        # ── Chat del lote ──────────────────────────────────────────
+        def _build_batch_prompt(df: pd.DataFrame, user_msg: str) -> str:
+            """
+            Construye el prompt de contexto para el LLM sobre el lote.
+            - Lotes <=20 filas: tabla completa.
+            - Lotes >20 filas: estadisticas + top-5 NOK + top-5 OK.
+            """
+            n_total = len(df)
+            n_nok   = int((df["Veredicto"] == "NOK").sum())
+            n_ok    = n_total - n_nok
+            p_mean  = df["P(NOK)"].mean()
+            p_max   = df["P(NOK)"].max()
+            p_min   = df["P(NOK)"].min()
+            fila_max = int(df.loc[df["P(NOK)"].idxmax(), "Fila"])
+            fila_min = int(df.loc[df["P(NOK)"].idxmin(), "Fila"])
+
+            resumen = (
+                f"== RESUMEN DEL LOTE ==\n"
+                f"Total piezas:   {n_total}\n"
+                f"Conformes (OK): {n_ok} ({n_ok/n_total:.1%})\n"
+                f"Defectuosas (NOK): {n_nok} ({n_nok/n_total:.1%})\n"
+                f"P(NOK) media:   {p_mean:.4f}\n"
+                f"P(NOK) maxima:  {p_max:.4f}  (Pieza {fila_max})\n"
+                f"P(NOK) minima:  {p_min:.4f}  (Pieza {fila_min})\n"
+                f"Umbral sagrado: {eng.threshold:.4f}\n"
+            )
+
+            if n_total <= 20:
+                tabla_lines = df.to_string(index=False)
+                tabla_ctx   = f"== TABLA COMPLETA ==\n{tabla_lines}\n"
+            else:
+                top_nok = df.nlargest(5, "P(NOK)")[["Fila", "Veredicto", "P(NOK)"]]
+                top_ok  = df.nsmallest(5, "P(NOK)")[["Fila", "Veredicto", "P(NOK)"]]
+                tabla_ctx = (
+                    f"== TOP 5 PIEZAS CON MAYOR RIESGO (NOK) ==\n"
+                    f"{top_nok.to_string(index=False)}\n\n"
+                    f"== TOP 5 PIEZAS MAS CONFORMES (OK) ==\n"
+                    f"{top_ok.to_string(index=False)}\n"
+                    f"(Lote grande: se muestran solo los extremos. "
+                    f"Para consultar una pieza concreta, menciona su numero de fila.)\n"
+                )
+
+            # Si el usuario menciona una pieza concreta, anadir su fila
+            import re
+            mention = re.search(r"pieza\s+(\d+)", user_msg, re.IGNORECASE)
+            pieza_ctx = ""
+            if mention:
+                num = int(mention.group(1))
+                filas = df[df["Fila"] == num]
+                if not filas.empty:
+                    row = filas.iloc[0]
+                    pieza_ctx = (
+                        f"\n== DETALLE PIEZA {num} ==\n"
+                        f"Veredicto: {row['Veredicto']}\n"
+                        f"P(NOK): {row['P(NOK)']:.4f}\n"
+                        f"P(OK):  {row['P(OK)']:.4f}\n"
+                    )
+                else:
+                    pieza_ctx = f"\nNota: La pieza {num} no existe en este lote (total: {n_total}).\n"
+
+            return (
+                f"{resumen}\n"
+                f"{tabla_ctx}"
+                f"{pieza_ctx}\n"
+                f"== PREGUNTA DEL OPERARIO ==\n{user_msg}\n"
+            )
+
+        _BATCH_SYSTEM = (
+            "Eres un Ingeniero Senior de Calidad del proyecto PLUTO para la empresa CTAG. "
+            "Se te presenta el resultado de una inspeccion por lotes de piezas industriales. "
+            "Responde de forma directa y tecnica. "
+            f"El umbral de clasificacion es {eng.threshold:.4f}: "
+            f"P(NOK) >= {eng.threshold:.4f} implica pieza DEFECTUOSA. "
+            "Puedes referirte a piezas por su numero de fila. "
+            "Sé conciso: maxima 15 segundos de lectura por respuesta."
+        )
+
+        # Parche: stream_response usa SYSTEM_PROMPT global; para el lote
+        # creamos un wrapper que sobreescribe el system field del payload.
+
+
+        def _stream_batch(prompt: str, model: str = LLM_MODEL):
+            """Wrapper que envia el system prompt especifico de lote."""
+            import json, requests as _req
+            payload = {
+                "model":  model,
+                "system": _BATCH_SYSTEM,
+                "prompt": prompt,
+                "stream": True,
+            }
+            try:
+                with _req.post(
+                    "http://localhost:11434/api/generate",
+                    json=payload, stream=True, timeout=90,
+                ) as resp:
+                    resp.raise_for_status()
+                    buf = ""
+                    for raw in resp.iter_lines():
+                        if not raw:
+                            continue
+                        try:
+                            chunk = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        buf += chunk.get("response", "")
+                        yield buf
+                        if chunk.get("done", False):
+                            break
+            except Exception as exc:
+                yield f"Error al conectar con el LLM: {exc}"
+
+        def on_batch_chat(user_msg: str, history: list, df_lote):  # noqa: F811
+            if not user_msg.strip():
+                yield history, ""
+                return
+            if df_lote is None or (hasattr(df_lote, "empty") and df_lote.empty):
+                reply = "No hay resultados de lote. Pulsa **Predecir Lote** primero."
+                yield history + [{"role": "user", "content": user_msg},
+                                  {"role": "assistant", "content": reply}], ""
+                return
+            status, _ = check_ollama(LLM_MODEL)
+            if status != OllamaStatus.SERVER_UP:
+                reply = f"Ollama no disponible. Ejecuta: ollama serve"
+                yield history + [{"role": "user", "content": user_msg},
+                                  {"role": "assistant", "content": reply}], ""
+                return
+            prompt  = _build_batch_prompt(df_lote, user_msg)
+            history = history + [{"role": "user", "content": user_msg},
+                                  {"role": "assistant", "content": ""}]
+            for partial in _stream_batch(prompt, model=LLM_MODEL):
+                history[-1]["content"] = partial
+                yield history, ""
+
+        btn_batch_send.click(
+            fn=on_batch_chat,
+            inputs=[batch_user_input, batch_chatbot, batch_state],
+            outputs=[batch_chatbot, batch_user_input],
+        )
+        batch_user_input.submit(
+            fn=on_batch_chat,
+            inputs=[batch_user_input, batch_chatbot, batch_state],
+            outputs=[batch_chatbot, batch_user_input],
+        )
+
+        # ── Chat individual ─────────────────────────────────────────
         def on_chat(user_msg: str, history: list, result: dict):
             if not user_msg.strip():
                 yield history, ""
