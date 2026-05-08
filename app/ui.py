@@ -306,6 +306,8 @@ def build_app() -> gr.Blocks:
 
         state_result     = gr.State(value={})
         file_valid_state = gr.State(value=False)   # True solo cuando hay fichero valido cargado
+        batch_raw_state    = gr.State(value=None)  # X_aligned from batch prediction
+        batch_selected_idx = gr.State(value=None)  # Selected row index in batch table
 
         # ── CABECERA ──────────────────────────────────────────────────────────
         gr.HTML(f"""
@@ -465,6 +467,14 @@ def build_app() -> gr.Blocks:
         batch_status   = gr.HTML(value="", label="")
         batch_table    = gr.DataFrame(value=None, label="Resultados del lote", interactive=False)
         batch_download = gr.File(label="Descargar resultados (CSV)", interactive=False, elem_id="batch_download")
+        batch_selected_html = gr.HTML(value="")
+        btn_batch_detail = gr.Button(
+            "Ver Detalle de Pieza",
+            variant="primary",
+            size="lg",
+            visible=False,
+            elem_id="btn_batch_detail",
+        )
 
         # ════════════════════════════════════════════════════════════════════
         # CHATBOT
@@ -709,7 +719,7 @@ def build_app() -> gr.Blocks:
                     '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     '<b>Sin fichero.</b> Carga un CSV o Excel antes de predecir el lote.'
                     '</div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             # 1. Leer fichero completo
@@ -722,14 +732,14 @@ def build_app() -> gr.Blocks:
                     f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     f'<b>Fichero no valido.</b> No se pudo leer el contenido.<br>'
                     f'<code style="font-size:0.85em;">{escape(str(e))}</code></div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             if df_raw.empty:
                 return (
                     '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     '<b>Fichero vacio.</b> El archivo no contiene filas de datos.</div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             # 2. Normalizacion de cabeceras
@@ -741,7 +751,7 @@ def build_app() -> gr.Blocks:
                     '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     '<b>Fichero no reconocido.</b> Ninguna columna coincide con las '
                     'variables del modelo. Comprueba que el fichero es de inspeccion CTAG.</div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             # 3. Validacion estricta: texto en numericas presentes (NaN se tolera)
@@ -773,7 +783,7 @@ def build_app() -> gr.Blocks:
                     f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     f'<b>Lote invalido:</b> columnas numericas con valores no numericos.<br><br>'
                     f'{"<br>".join(invalid_info)}</div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             # 4. Alinear DataFrame con las 102 variables del motor
@@ -797,7 +807,7 @@ def build_app() -> gr.Blocks:
                 return (
                     f'<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
                     f'<b>Error en prediccion:</b> {escape(str(e))}</div>',
-                    _empty, None,
+                    _empty, None, None,
                 )
 
             # 6. Tabla de resultados
@@ -827,12 +837,125 @@ def build_app() -> gr.Blocks:
             results_df.to_csv(tmp.name, index=False)
             tmp.close()
 
-            return status_html, results_df, tmp.name
+            return status_html, results_df, tmp.name, X_aligned
 
         btn_batch.click(
             fn=on_batch_predict,
             inputs=[batch_file],
-            outputs=[batch_status, batch_table, batch_download],
+            outputs=[batch_status, batch_table, batch_download, batch_raw_state],
+            show_progress="full",
+        ).then(
+            fn=lambda: ("", gr.update(visible=False), None),
+            outputs=[batch_selected_html, btn_batch_detail, batch_selected_idx],
+        )
+
+        # ── Seleccion de fila en lote ────────────────────────────────────
+        def on_batch_select(evt: gr.SelectData, results_df_val):
+            if results_df_val is None or (isinstance(results_df_val, pd.DataFrame) and results_df_val.empty):
+                return None, "", gr.update(visible=False)
+            row_idx = evt.index[0]
+            if row_idx < 0 or row_idx >= len(results_df_val):
+                return None, "", gr.update(visible=False)
+            row_data = results_df_val.iloc[row_idx]
+            verdict = row_data["Veredicto"]
+            fila = int(row_data["Fila"])
+            pnok = row_data["P(NOK)"]
+            color = "#34d399" if verdict == "OK" else "#f87171"
+            html = (
+                f'<div class="warning-banner" style="border-color:{color};color:{color};">'
+                f'<b>Pieza seleccionada:</b> Fila {fila} — Veredicto: {verdict} — '
+                f'P(NOK): {pnok}</div>'
+            )
+            return row_idx, html, gr.update(visible=True)
+
+        batch_table.select(
+            fn=on_batch_select,
+            inputs=[batch_table],
+            outputs=[batch_selected_idx, batch_selected_html, btn_batch_detail],
+        )
+
+        # ── Detalle de pieza desde lote ──────────────────────────────────
+        def on_batch_detail(selected_idx, batch_raw_df):
+            _defs = _default_values(eng)
+
+            if selected_idx is None or batch_raw_df is None:
+                err = (
+                    '<div class="warning-banner" style="border-color:#ef4444;color:#fecaca;">'
+                    '<b>Sin seleccion.</b> Haz clic en una fila de la tabla de lote primero.'
+                    '</div>'
+                )
+                return ("", err, 0.0, pd.DataFrame(), {}, [], True, *_defs)
+
+            try:
+                row = batch_raw_df.iloc[selected_idx].to_dict()
+                label, proba, df_fe = eng.predict(row)
+                top_k = explainer.explain(df_fe, top_k_range=(3, 10))
+
+                if label == "OK":
+                    html = (
+                        '<div class="ok-banner">'
+                        f'<h1>PIEZA OK</h1>'
+                        f'<p class="banner-sub">Pieza CONFORME - P(NOK) = {proba:.2%}</p>'
+                        '</div>'
+                    )
+                else:
+                    html = (
+                        '<div class="nok-banner">'
+                        f'<h1>PIEZA NOK</h1>'
+                        f'<p class="banner-sub">Pieza DEFECTUOSA - P(NOK) = {proba:.2%}</p>'
+                        '</div>'
+                    )
+
+                shap_df = pd.DataFrame(
+                    [
+                        {
+                            "Variable":  name,
+                            "Valor":     round(val, 4) if isinstance(val, (int, float)) else val,
+                            "SHAP Neto": round(sv, 6),
+                            "Direccion": "DEFECTO" if sv > 0 else "CALIDAD",
+                        }
+                        for name, val, sv in top_k
+                    ],
+                    columns=["Variable", "Valor", "SHAP Neto", "Direccion"],
+                )
+
+                state = {"label": label, "proba": proba, "top_k": top_k}
+
+                # Build form values in the same order as input_comps (num_cols then cat_cols)
+                form_vals = []
+                for feat in eng.num_cols:
+                    v = row.get(feat)
+                    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+                        v = round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4)
+                    else:
+                        try:
+                            v = round(float(v), 4)
+                        except (ValueError, TypeError):
+                            v = round(eng.col_stats.get(feat, {}).get("mean", 0.0), 4)
+                    form_vals.append(v)
+                for feat in eng.cat_cols:
+                    v = row.get(feat)
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        cats = eng.categories.get(feat, [])
+                        v = cats[0] if cats else ""
+                    form_vals.append(str(v))
+
+                return ("", html, proba, shap_df, state, [], True, *form_vals)
+
+            except Exception as exc:
+                err_html = (
+                    '<div class="pending-banner">'
+                    f'<p style="color:#f87171;font-size:1.1em;">Error durante la prediccion</p>'
+                    f'<p style="color:#94a3b8;font-size:0.9em;">{exc}</p>'
+                    '</div>'
+                )
+                return ("", err_html, 0.0, pd.DataFrame(), {}, [], True, *_defs)
+
+        btn_batch_detail.click(
+            fn=on_batch_detail,
+            inputs=[batch_selected_idx, batch_raw_state],
+            outputs=[range_warnings, result_html, result_slider, shap_table,
+                     state_result, chatbot, file_valid_state, *input_comps],
             show_progress="full",
         )
 
