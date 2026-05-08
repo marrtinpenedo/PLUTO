@@ -132,57 +132,51 @@ def build_prompt(
     Construye el prompt estructurado para el LLM.
 
     El System Prompt (SYSTEM_PROMPT) define el rol y las reglas de interpretacion.
-    Este user-prompt aporta los datos especificos de la inspeccion actual.
+    Este user-prompt aporta los datos especificos de la inspeccion actual, 
+    formateados de forma estricta para evitar alucinaciones.
 
     Args:
         label      : "OK" o "NOK" (resultado del umbral)
         proba      : probabilidad de NOK (float 0-1)
-        threshold  : umbral de decision (debe ser NOK_THRESHOLD = 0.6818)
-        top_k      : lista procesada por explainer.py:
-                     (nombre_industrial, valor_fisico, shap_neto)
-                     Los nombres ya son industriales (sin sufijos _bin, sin latent_*).
-                     Los valores SHAP son impactos netos algebraicos.
+        threshold  : umbral de decision
+        top_k      : lista procesada por explainer.py
         user_query : pregunta del operario
 
     Returns:
-        Prompt de usuario como string. Se envia junto con SYSTEM_PROMPT.
+        Prompt de usuario como string.
     """
     k = len(top_k)
 
-    # Tabla SHAP procesada (ya viene con nombres industriales y valores netos)
+    # 1. "Masticamos" la tabla combinando la robustez de strings (Lucas) con el texto explicito de direccion
     lines = []
     for name, val, sv in top_k:
-        # Si es texto (string), lo formateamos como texto. Si es numero, con 4 decimales.
         val_str = f"{val:>10}" if isinstance(val, str) else f"{val:>10.4f}"
-        
-        lines.append(
-            f"  {name:<45s}  valor={val_str}   SHAP_neto={sv:>+.5f}  "
-            f"({'DEFECTO' if sv > 0 else 'CALIDAD'})"
-        )
+        direccion = "DEFECTO (NOK)" if sv > 0 else "CALIDAD (OK)"
+        lines.append(f"  - {name}: Valor medido = {val_str.strip()} | ESTA VARIABLE EMPUJA A -> {direccion}")
         
     feat_lines = "\n".join(lines)
 
+    # 2. Inyectamos refuerzos de comportamiento directamente en el User Prompt
     return (
+        f"══ INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ══\n"
+        f"1. RESPONDE ÚNICA Y EXCLUSIVAMENTE EN ESPAÑOL.\n"
+        f"2. Basa tu diagnóstico SOLO en las {k} variables listadas abajo. No menciones variables fantasma.\n"
+        f"3. REGLA DE PORCENTAJES: El valor P(NOK) es la probabilidad de DEFECTO. "
+        f"Si la mencionas, aclara siempre que es probabilidad de DEFECTO.\n"
+        f"\n"
         f"══ DATOS DE LA INSPECCION ══\n"
         f"Veredicto:             {label}\n"
-        f"P(NOK):                {proba:.4f}  ({proba:.2%})\n"
-        f"P(OK):                 {1 - proba:.4f}  ({1 - proba:.2%})\n"
-        f"Umbral:        {threshold:.4f}\n"
+        f"P(NOK) [Prob. Defecto]: {proba:.4f} ({proba:.2%})\n"
+        f"Umbral:                {threshold:.4f}\n"
         f"Decision:              {'P(NOK) >= umbral -> DEFECTO confirmado' if proba >= threshold else 'P(NOK) < umbral -> CONFORMIDAD confirmada'}\n"
         f"\n"
-        f"══ ANALISIS SHAP - IMPACTO NETO POR SENSOR (Top {k}) ══\n"
-        f"(Valores netos: suma algebraica sensor fisico + derivadas binarizadas)\n"
+        f"══ ANÁLISIS DE SENSORES (Top {k} Variables Críticas) ══\n"
+        f"ATENCIÓN: Lee textualmente hacia dónde empuja cada variable.\n"
         f"{feat_lines}\n"
-        f"\n"
-        f"Recordatorio de interpretacion:\n"
-        f"  SHAP_neto > 0  =>  contribucion al DEFECTO (NOK)\n"
-        f"  SHAP_neto < 0  =>  contribucion a la CALIDAD (OK)\n"
-        f"  Magnitud       =>  fuerza relativa del sensor en esta prediccion\n"
         f"\n"
         f"══ PREGUNTA DEL OPERARIO ══\n"
         f"{user_query}\n"
     )
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Streaming
