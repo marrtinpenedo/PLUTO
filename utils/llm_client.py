@@ -164,13 +164,13 @@ def build_prompt(
     nok_drivers = [(n, v, sv) for n, v, sv in top_k if sv > 0]
     ok_drivers  = [(n, v, sv) for n, v, sv in top_k if sv <= 0]
 
-    def fmt_var(name, val, sv):
+    def fmt_var(idx, name, val, sv):
         val_str = f"{val}" if isinstance(val, str) else f"{val:.4f}"
         direccion = "→ DEFECTO" if sv > 0 else "→ CALIDAD"
-        return f"  · {name}: valor={val_str} | SHAP={sv:+.4f} {direccion}"
+        return f"  {idx}. {name}: valor={val_str} | SHAP={sv:+.4f} {direccion}"
 
-    nok_block = "\n".join(fmt_var(*v) for v in nok_drivers) or "  (ninguna)"
-    ok_block  = "\n".join(fmt_var(*v) for v in ok_drivers)  or "  (ninguna)"
+    nok_block = "\n".join(fmt_var(i+1, *v) for i, v in enumerate(nok_drivers)) or "  (ninguna)"
+    ok_block  = "\n".join(fmt_var(i+1, *v) for i, v in enumerate(ok_drivers))  or "  (ninguna)"
 
     decision_str = (
         f"P(NOK)={proba:.4f} >= umbral={threshold:.4f} → NOK confirmado"
@@ -184,15 +184,20 @@ def build_prompt(
         f"P(NOK) [prob. defecto]: {proba:.4f} ({proba:.2%})\n"
         f"Decisión:               {decision_str}\n"
         f"\n"
-        f"── Variables que EMPUJAN a DEFECTO (SHAP +) ── top {len(nok_drivers)}/{k}\n"
+        f"══ TABLA SHAP COMPLETA ({k} variables analizadas) ══\n"
+        f"\n"
+        f"── SECCION 1: Variables que EMPUJAN a DEFECTO (SHAP +) — {len(nok_drivers)} variables ──\n"
         f"{nok_block}\n"
         f"\n"
-        f"── Variables que APOYAN CALIDAD (SHAP -) ── top {len(ok_drivers)}/{k}\n"
+        f"── SECCION 2: Variables que APOYAN CALIDAD (SHAP -) — {len(ok_drivers)} variables ──\n"
         f"{ok_block}\n"
+        f"\n"
+        f"RESUMEN: {len(nok_drivers)} empujan a DEFECTO + {len(ok_drivers)} apoyan CALIDAD = {k} total.\n"
         f"\n"
         f"══ PREGUNTA DEL OPERARIO ══\n"
         f"{user_query}\n"
         f"\n"
+        f"Usa TODAS las variables de AMBAS secciones en tu análisis. "
         f"Responde adaptándote al tipo de pregunta según las reglas del sistema."
     )
 
