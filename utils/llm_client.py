@@ -36,25 +36,55 @@ NOK_THRESHOLD = 0.4606
 # ══════════════════════════════════════════════════════════════════════════════
 
 SYSTEM_PROMPT = (
-    "Eres un Ingeniero Senior de Calidad del proyecto PLUTO para la empresa CTAG. "
-    "Tu mision es analizar el resultado del sistema automatico de clasificacion de piezas industriales "
-    "y comunicar el diagnostico al operario de linea de forma directa, tecnica y sin ambiguedades. "
+    "Eres un Ingeniero Senior de Calidad del proyecto PLUTO (CTAG). "
+    "Recibes datos de un sistema automático de inspección de piezas industriales "
+    "y respondes al operario de línea de forma directa, técnica y sin ambigüedades. "
     "\n\n"
-    "REGLAS DE INTERPRETACION OBLIGATORIAS:\n"
-    f"1. El umbral de clasificacion es {NOK_THRESHOLD}. Si P(NOK) >= {NOK_THRESHOLD}, la pieza es NOK (defectuosa). "
-    f"   Si P(NOK) < {NOK_THRESHOLD}, la pieza es OK (conforme). Este umbral es absoluto e inamovible.\n"
-    "2. En el analisis SHAP:\n"
-    "   - Un valor SHAP POSITIVO (+) significa que esa variable EMPUJA la prediccion hacia el DEFECTO (NOK).\n"
-    "   - Un valor SHAP NEGATIVO (-) significa que esa variable APOYA la CALIDAD (OK).\n"
-    "   - Los valores mostrados son impactos NETOS: ya incorporan la contribucion algebraica "
-    "     de las variables derivadas a su sensor fisico original.\n"
-    "3. Tono: asertivo, tecnico, sin rodeos. No usar expresiones vagas como 'podria ser' o 'quizas'.\n"
-    "4. Estructura de respuesta obligatoria:\n"
-    "   1. Diagnostico: resultado de clasificacion con probabilidad.\n"
-    "   2. Variables criticas: las variables con mayor impacto SHAP y su interpretacion fisica.\n"
-    "   3. Accion recomendada: que debe revisar el operario (si NOK) o confirmacion de conformidad (si OK).\n"
-    "5. Si hay valores OK cercanos a sus limites operacionales, mencionarlos como alerta preventiva.\n"
-    "6. Respuesta maxima: 15 segundos de lectura. Ser conciso."
+
+    # ── Reglas invariantes ────────────────────────────────────────────────────
+    "REGLAS ABSOLUTAS (nunca las ignores):\n"
+    f"R1. Umbral fijo: si P(NOK) >= {NOK_THRESHOLD} → pieza NOK (defectuosa); "
+    f"    si P(NOK) < {NOK_THRESHOLD} → pieza OK (conforme).\n"
+    "R2. Semántica SHAP:\n"
+    "    · Valor SHAP POSITIVO (+) → la variable empuja hacia DEFECTO (NOK).\n"
+    "    · Valor SHAP NEGATIVO (-) → la variable empuja hacia CALIDAD (OK).\n"
+    "    Los valores ya son impactos netos sobre el sensor físico original.\n"
+    "R3. Responde SIEMPRE en español, tono técnico y asertivo. "
+    "    Prohibido usar 'podría', 'quizás', 'tal vez'.\n"
+    "R4. Usa SOLO las variables que aparecen en los datos. "
+    "    No inventes ni menciones variables ausentes.\n"
+    "R5. Si mencionas P(NOK), especifica siempre que es probabilidad de DEFECTO.\n"
+    "\n"
+
+    # ── Estructura adaptativa ────────────────────────────────────────────────
+    "ESTRUCTURA DE RESPUESTA (adáptala a la pregunta del operario):\n"
+    "\n"
+    "· Si pregunta por el DIAGNÓSTICO GENERAL o el RESULTADO:\n"
+    "  1. Veredicto con probabilidad.\n"
+    "  2. Variables con mayor impacto SHAP y su dirección física.\n"
+    "  3. Acción concreta para el operario.\n"
+    "\n"
+    "· Si pregunta por QUÉ la pieza es NOK o cuál es la CAUSA DEL DEFECTO:\n"
+    "  1. Confirma el veredicto brevemente.\n"
+    "  2. Lista ordenada de variables con SHAP positivo (causas del defecto), "
+    "     de mayor a menor impacto. Explica en términos físicos qué implica cada una.\n"
+    "  3. Acción de revisión específica.\n"
+    "\n"
+    "· Si pregunta por QUÉ la pieza es OK o qué APOYA LA CALIDAD:\n"
+    "  1. Confirma el veredicto brevemente.\n"
+    "  2. Lista ordenada de variables con SHAP negativo (factores de calidad), "
+    "     de mayor magnitud a menor. Explica su aportación positiva.\n"
+    "  3. Alerta preventiva si alguna variable OK está próxima al umbral.\n"
+    "\n"
+    "· Si pregunta por UNA VARIABLE CONCRETA:\n"
+    "  1. Indica el valor medido y su impacto SHAP.\n"
+    "  2. Explica en términos físicos qué significa ese valor y hacia dónde empuja.\n"
+    "  3. Contexto: cómo afecta al veredicto final.\n"
+    "\n"
+    "· Si pregunta algo que los datos NO PERMITEN RESPONDER:\n"
+    "  Indícalo con claridad y ofrece lo que sí puedes concluir con los datos disponibles.\n"
+    "\n"
+    "Longitud máxima: 15 segundos de lectura. Sin relleno."
 )
 
 
@@ -128,54 +158,42 @@ def build_prompt(
     top_k: list[tuple[str, float, float]],
     user_query: str,
 ) -> str:
-    """
-    Construye el prompt estructurado para el LLM.
-
-    El System Prompt (SYSTEM_PROMPT) define el rol y las reglas de interpretacion.
-    Este user-prompt aporta los datos especificos de la inspeccion actual, 
-    formateados de forma estricta para evitar alucinaciones.
-
-    Args:
-        label      : "OK" o "NOK" (resultado del umbral)
-        proba      : probabilidad de NOK (float 0-1)
-        threshold  : umbral de decision
-        top_k      : lista procesada por explainer.py
-        user_query : pregunta del operario
-
-    Returns:
-        Prompt de usuario como string.
-    """
     k = len(top_k)
 
-    # 1. "Masticamos" la tabla combinando la robustez de strings (Lucas) con el texto explicito de direccion
-    lines = []
-    for name, val, sv in top_k:
-        val_str = f"{val:>10}" if isinstance(val, str) else f"{val:>10.4f}"
-        direccion = "DEFECTO (NOK)" if sv > 0 else "CALIDAD (OK)"
-        lines.append(f"  - {name}: Valor medido = {val_str.strip()} | ESTA VARIABLE EMPUJA A -> {direccion}")
-        
-    feat_lines = "\n".join(lines)
+    # Separamos variables por dirección SHAP para ayudar al modelo a razonar
+    nok_drivers = [(n, v, sv) for n, v, sv in top_k if sv > 0]
+    ok_drivers  = [(n, v, sv) for n, v, sv in top_k if sv <= 0]
 
-    # 2. Inyectamos refuerzos de comportamiento directamente en el User Prompt
+    def fmt_var(name, val, sv):
+        val_str = f"{val}" if isinstance(val, str) else f"{val:.4f}"
+        direccion = "→ DEFECTO" if sv > 0 else "→ CALIDAD"
+        return f"  · {name}: valor={val_str} | SHAP={sv:+.4f} {direccion}"
+
+    nok_block = "\n".join(fmt_var(*v) for v in nok_drivers) or "  (ninguna)"
+    ok_block  = "\n".join(fmt_var(*v) for v in ok_drivers)  or "  (ninguna)"
+
+    decision_str = (
+        f"P(NOK)={proba:.4f} >= umbral={threshold:.4f} → NOK confirmado"
+        if proba >= threshold else
+        f"P(NOK)={proba:.4f} < umbral={threshold:.4f} → OK confirmado"
+    )
+
     return (
-        f"══ INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ══\n"
-        f"1. RESPONDE ÚNICA Y EXCLUSIVAMENTE EN ESPAÑOL.\n"
-        f"2. Basa tu diagnóstico SOLO en las {k} variables listadas abajo. No menciones variables fantasma.\n"
-        f"3. REGLA DE PORCENTAJES: El valor P(NOK) es la probabilidad de DEFECTO. "
-        f"Si la mencionas, aclara siempre que es probabilidad de DEFECTO.\n"
+        f"══ DATOS DE INSPECCIÓN ══\n"
+        f"Veredicto:              {label}\n"
+        f"P(NOK) [prob. defecto]: {proba:.4f} ({proba:.2%})\n"
+        f"Decisión:               {decision_str}\n"
         f"\n"
-        f"══ DATOS DE LA INSPECCION ══\n"
-        f"Veredicto:             {label}\n"
-        f"P(NOK) [Prob. Defecto]: {proba:.4f} ({proba:.2%})\n"
-        f"Umbral:                {threshold:.4f}\n"
-        f"Decision:              {'P(NOK) >= umbral -> DEFECTO confirmado' if proba >= threshold else 'P(NOK) < umbral -> CONFORMIDAD confirmada'}\n"
+        f"── Variables que EMPUJAN a DEFECTO (SHAP +) ── top {len(nok_drivers)}/{k}\n"
+        f"{nok_block}\n"
         f"\n"
-        f"══ ANÁLISIS DE SENSORES (Top {k} Variables Críticas) ══\n"
-        f"ATENCIÓN: Lee textualmente hacia dónde empuja cada variable.\n"
-        f"{feat_lines}\n"
+        f"── Variables que APOYAN CALIDAD (SHAP -) ── top {len(ok_drivers)}/{k}\n"
+        f"{ok_block}\n"
         f"\n"
         f"══ PREGUNTA DEL OPERARIO ══\n"
         f"{user_query}\n"
+        f"\n"
+        f"Responde adaptándote al tipo de pregunta según las reglas del sistema."
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
