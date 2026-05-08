@@ -488,7 +488,6 @@ def build_app() -> gr.Blocks:
                 placeholder=(
                     "Ej: ¿Por qué esta pieza es NOK? "
                     "¿Qué variable tiene más peso? "
-                    "¿Hay algún valor cerca del límite?"
                 ),
                 label="", lines=2, scale=9,
                 show_label=False, elem_id="chat_input",

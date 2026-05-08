@@ -35,11 +35,11 @@ ollama run  llama3              # puede cerrarse mientras no se haga un stop
 Si `models/exp05_vae_catboost_v2.pkl` no existe aun:
 
 ```bash
-python scripts/export_exp05_model.py
+python scripts/export_exp05_model_v2.py
 ```
 
-El script entrena el pipeline completo
-(VAE + CatBoost) sobre el dataset de referencia y serializa el artefacto.
+El script entrena el pipeline completo (5-Fold OOF, VAE + CatBoost Nativo)
+sobre el dataset de referencia y serializa el artefacto.
 
 ### Arrancar la interfaz
 
@@ -47,7 +47,7 @@ El script entrena el pipeline completo
 python main.py
 ```
 
-Interfaz disponible en: **http://localhost:7860**
+Interfaz disponible en: **http://localhost:7860** 
 
 ---
 
@@ -56,18 +56,19 @@ Interfaz disponible en: **http://localhost:7860**
 ```
 +--------------------------------------------------------------------+
 |                      INTERFAZ (app/ui.py - Gradio)                 |
-|   Formulario manual (102 vars)  |  Carga CSV (fuzzy match)         |
-|   Banner OK/NOK + Slider P(NOK) |  Tabla SHAP Neta + Chatbot LLM   |
-+------------------------------+------------------------------------- +
+|  Carga CSV/Excel  ->  Autocompletado formulario (102 vars)          |
+|  Banner OK/NOK + Slider P(NOK) | Tabla SHAP + Chatbot LLM          |
+|  Prediccion por Lotes (N filas, descarga CSV resultados)           |
++------------------------------+-------------------------------------+
                                |
            +-------------------+-------------------+
            |             BACKEND UTILS              |
            +--------+------------+------------------+
            |        |            |                  |
-    ml_engine.py  explainer.py  llm_client.py       |
-    (Exp_05 pkl) (SHAP v2.2)   (Ollama Sistema)     |
-    102 -> 123   Agregación   System Prompt CTAG   |
-    features     Real/VAE      NOK_THRESHOLD=0.6818  |
+     ml_engine.py  explainer.py  llm_client.py       |
+     (Exp_05 pkl) (SHAP v2.2)   (Ollama Sistema)     |
+     102 -> 113   Agregación   System Prompt CTAG   |
+     features     Real/VAE      NOK_THRESHOLD=0.4606  |
            |        |            |                  |
            +--------+------------+                  |
                     |                               |
@@ -80,7 +81,7 @@ Interfaz disponible en: **http://localhost:7860**
 +--------------------------------------------------+
 |  DATA (local, nunca sale del equipo)             |
 |  data/raw/Dataset_01_Anonimizado.xlsx            |
-|  models/exp05_vae_catboost.pkl                   |
+|  models/exp05_vae_catboost_v2.pkl                |
 +--------------------------------------------------+
 ```
 
@@ -88,9 +89,9 @@ Interfaz disponible en: **http://localhost:7860**
 
 | Capa | Tecnologia | Detalle |
 |---|---|---|
-| UI | Gradio | Interfaz + servidor unificados, dark theme CTAG |
+| UI | Gradio (Base theme, Inter font) | Dark theme CTAG; requiere CSV para activar prediccion |
 | ML | CatBoost + VAE (PyTorch) | Serializado en `.pkl` con scaler + VAE state_dict |
-| xAI | SHAP TreeExplainer | Agregacion neta, balanceo Real/VAE, max 10 vars |
+| xAI | CatBoost `get_feature_importance(ShapValues)` | Nativo CatBoost; agrega derivadas `_bin` si existen; balanceo Real/VAE; max 10 vars |
 | LLM | Ollama (local) | LLaMA 3 o Mistral, sin llamadas externas |
 | Rutas | pathlib | Compatible Windows (OneDrive) y Linux |
 
@@ -118,7 +119,7 @@ PLUTO/
 |
 +-- models/
 |   +-- exp05_vae_catboost.pkl       <- ARTEFACTO DEPRECATED (threshold=0.6818)
-    +-- exp05_vae_catboost_v2.pkl       <- ARTEFACTO EN PRODUCCIÓN (threshold=0.4606)
+    +-- exp05_vae_catboost_v2.pkl       <- ARTEFACTO EN PRODUCCIÓN (threshold=0.4606, 113 feats)
 |
 +-- data/
 |   +-- raw/Dataset_01_Anonimizado.xlsx   <- Dataset de referencia (RGPD-safe)
@@ -136,40 +137,45 @@ PLUTO/
 
 | Metrica | Valor |
 |---|---|
-| F1-Weighted | 0.69 |
-| F1-Macro | 0.57 |
-| F1 clase NOK | 0.80 |
-| F1 clase OK | 0.35 |
-| **Recall OK** | **0.33** (mejor de 11 experimentos) |
-| **Threshold de produccion** | **0.6818** |
-| Features de entrada al modelo | 123 (102 orig + 10 bins + 1 vae_err + 12 latents - 2 excluidas) |
+| F1-Weighted | **0.67** |
+| F1-Macro | **0.57** |
+| F1 clase NOK | **0.77** |
+| F1 clase OK | **0.36** |
+| Recall NOK | **0.76** |
+| **Recall OK** | **0.39** (mejor de 11 experimentos) |
+| ROC-AUC | **0.63** |
+| **Threshold de produccion** | **0.4606** (optimizado OOF sobre F1-Macro) |
+| Features de entrada al modelo | 113 (102 orig escaladas + 1 vae_err + 12 latents - 2 excluidas) |
 
 ### Por que Exp_05 es el modelo de produccion
 
-1. **Maximo Recall OK (33%)**: Prioridad CTAG. Un false negative (pieza OK clasificada
+1. **Maximo Recall OK (39%)**: Prioridad CTAG. Un false negative (pieza OK clasificada
    como NOK) es tolerable; un false positive (pieza NOK marcada como OK) no lo es.
    El Recall OK indica la capacidad de evitar desperdiciar piezas buenas.
 2. **F1-Macro robusto (0.57)**: Equilibrio entre la clase mayoritaria (NOK) y la
    minoritaria (OK) en un dataset fuertemente desbalanceado.
-3. **Sin data leakage**: VAE, KBinsDiscretizer y StandardScaler se ajustan
+3. **Sin data leakage**: VAE y StandardScaler se ajustan
    exclusivamente sobre el train pool de cada fold. El threshold se optimiza
    sobre predicciones OOF (Out-Of-Fold), nunca sobre el holdout.
 
-### Pipeline de feature engineering (102 -> 123 variables)
+### Pipeline de feature engineering (102 -> 113 variables)
 
 ```
 Entrada (102 vars originales)
    |
-   +-- StandardScaler (ajustado solo en train)
+   +-- Imputacion: mediana (numericas) / "missing" (categoricas)
    |
-   +-- KBinsDiscretizer (10 variables numericas -> _bin)
+   +-- StandardScaler (ajustado solo en train, solo vars numericas)
    |
    +-- VAE Encoder (PyTorch, ajustado solo en train)
    |       -> vae_err  (error de reconstruccion)
    |       -> vae_l0 ... vae_l11  (12 dimensiones latentes)
    |
-   -> 123 features totales -> CatBoostClassifier
-                                  -> P(NOK) -> umbral
+   +-- CatBoost con categorias nativas (auto_class_weights=Balanced)
+   |
+   -> 113 features totales -> CatBoostClassifier
+                                   -> P(NOK) -> umbral 0.4606
+```
 
 ---
 
@@ -177,16 +183,21 @@ Entrada (102 vars originales)
 
 ### 1. Ingesta de datos
 
-**Formulario manual**
-- 102 variables agrupadas en acordeones de 20 variables cada uno.
-- Cada campo muestra la media del dataset de entrenamiento como valor por defecto.
-- Los campos numericos muestran el rango `[min, max]` del dataset de referencia.
-
-**Carga CSV**
-- El operario puede subir un fichero CSV con cualquier subconjunto de las 102 variables (se recomienda mandar todas las variables). 
-- El operario puede subir un batch de piezas para recibir sus predicciones sin explicación.
+**Carga de fichero**
+- El operario carga un fichero **CSV o Excel** con una fila de datos de inspeccion.
+- Hasta que se carga un fichero valido, el boton "Comprobar Calidad" permanece bloqueado.
 - Matching tolerante: insensible a mayusculas/minusculas y espacios en las cabeceras.
 - Las columnas ausentes se imputan con la media (numericas) o la primera categoria.
+- Una columna numerica presente con valor no parseable bloquea la carga (error rojo).
+
+**Formulario manual (visualizacion y edicion)**
+- Tras la carga, el formulario muestra los valores del fichero en 102 campos agrupados en acordeones de 20 variables cada uno.
+- Cada campo numerico muestra el rango `[min, max]` del dataset de referencia.
+- El operario puede editar los valores antes de predecir.
+
+**Prediccion por lotes**
+- Seccion separada para subir un fichero con **N filas** y obtener el veredicto de cada pieza.
+- Resultado descargable como CSV con columnas `Fila`, `Veredicto`, `P(NOK)`, `P(OK)`.
 
 ### 2. Validacion de rangos
 
@@ -196,9 +207,9 @@ pero el operario es informado del valor anomalo.
 
 ### 3. Clasificacion
 
-- `ml_engine.predict(row)` ejecuta el pipeline completo: scaler, bins, VAE, CatBoost.
-- Devuelve `(label, proba, df_fe)` donde `df_fe` contiene las 123 features transformadas.
-- El banner cambia de color segun el umbral sagrado **0.6818**:
+- `ml_engine.predict(row)` ejecuta el pipeline completo: scaler, VAE, CatBoost.
+- Devuelve `(label, proba, df_fe)` donde `df_fe` contiene las 113 features transformadas.
+- El banner cambia de color segun el umbral **0.4606**:
   - `P(NOK) >= umbral` -> **Banner rojo NOK** (pieza DEFECTUOSA).
   - `P(NOK) < umbral`  -> **Banner verde OK** (pieza CONFORME).
 
@@ -220,33 +231,32 @@ significativa y sin ruido cognitivo.
 
 ### Paso 1 - Calculo de SHAP crudos
 
-Se usa `shap.TreeExplainer` sobre el modelo CatBoost.
-Para clasificacion binaria, se extraen los valores SHAP de la **clase 1 (NOK)**.
+Se usa el metodo **nativo de CatBoost** `get_feature_importance(pool, type='ShapValues')`.
+Se construye un `cb.Pool` con `cat_features` para que CatBoost reconozca las categoricas.
+La matriz devuelta tiene forma `(1, n_features + 1)`; la ultima columna es el `base_value`
+(valor esperado del modelo) y se descarta.
 
 ```
-Entrada:  df_fe con 123 features
-Salida:   array de 123 valores SHAP (uno por feature)
+Entrada:  cb.Pool(df_fe_113_features, cat_features=cat_cols)
+Salida:   array de 113 valores SHAP (uno por feature)
           SHAP > 0  =>  la feature empuja la prediccion hacia NOK (defecto)
           SHAP < 0  =>  la feature empuja la prediccion hacia OK (calidad)
 ```
 
-### Paso 2 - Agregacion algebraica 
+### Paso 2 - Agregacion por variable
 
-El pipeline genera variables derivadas con sufijo `_bin` para cada variable numerica
-binariazada con `KBinsDiscretizer`. Estas variables derivadas no son independientes de
-su sensor fisico: miden lo mismo desde otra perspectiva. Por ello se **suman algebraicamente**:
+El nuevo pipeline (v2) elimina el `KBinsDiscretizer`, por lo que ya no existen
+variables derivadas con sufijo `_bin`. Cada sensor fisico tiene exactamente un
+valor SHAP directo. Las variables VAE (`vae_err`, `vae_l0..vae_l11`) tampoco
+se cruzan con sensores fisicos.
 
 ```
-SHAP_neto(sensor_X) = SHAP(sensor_X) + SHAP(sensor_X_bin)
+SHAP_neto(sensor_X) = SHAP(sensor_X)   # sin derivadas binarias
 ```
 
-**Gestion de contradicciones de signo:**
-Si `SHAP(sensor_X) = -0.05` (apoya OK) y `SHAP(sensor_X_bin) = +0.03` (apoya NOK),
-el impacto neto es `-0.02`. El signo final refleja el **efecto neto real** del sensor.
+Las variables VAE (`vae_err`, `vae_l*`) no tienen base fisica y no se agregan con nadie.
 
-Las variables VAE (`vae_err`, `latent_*`) no tienen base fisica y no se agregan con nadie.
-
-**Resultado:** un diccionario con un unico registro por sensor fisico, con su SHAP neto.
+**Resultado:** un diccionario con un unico registro por sensor fisico, con su SHAP directo.
 
 ### Paso 3 - Filtro de caida relativa del 15% (Seccion 5.2)
 
@@ -299,9 +309,9 @@ Si hubiera 3 VAE y 1 Real, el algoritmo bajaria en el ranking buscando
 | Nombre tecnico | Nombre industrial en UI |
 |---|---|
 | `vae_err` | Indice de Correlacion Global |
-| `latent_0` | Patron Estructural 0 |
-| `latent_5` | Patron Estructural 5 |
-| `latent_11` | Patron Estructural 11 |
+| `vae_l0` | Patron Estructural 0 |
+| `vae_l5` | Patron Estructural 5 |
+| `vae_l11` | Patron Estructural 11 |
 | Resto | Nombre del sensor fisico original |
 
 ### Columnas de la tabla SHAP en la UI
@@ -324,7 +334,7 @@ Si hubiera 3 VAE y 1 Real, el algoritmo bajaria en el ranking buscando
 | Endpoint | `http://localhost:11434/api/generate` |
 | Modelo por defecto | `llama3` (configurable en `llm_client.py`) |
 | Timeout streaming | 90 s |
-| Umbral sagrado | **0.6818** (constante `NOK_THRESHOLD` en el modulo) |
+| Umbral sagrado | **0.4606** (constante `NOK_THRESHOLD` en el modulo) |
 
 ### Verificacion de disponibilidad
 
@@ -340,36 +350,44 @@ El campo `"system"` del payload de Ollama contiene las instrucciones de rol perm
 
 ```
 Eres un Ingeniero Senior de Calidad del proyecto PLUTO para la empresa CTAG.
-Tu mision es analizar el resultado del sistema automatico de clasificacion
-de piezas industriales y comunicar el diagnostico al operario de linea de
-forma directa, tecnica y sin ambiguedades.
+Tu mision es analizar el resultado del sistema automatico de clasificacion de piezas
+industriales y comunicar el diagnostico al operario de linea de forma directa,
+tecnica y sin ambiguedades.
 
 REGLAS DE INTERPRETACION OBLIGATORIAS:
-1. Umbral sagrado: 0.6818.
-   - P(NOK) >= 0.6818  =>  pieza NOK (defectuosa). Absoluto e inamovible.
-   - P(NOK) < 0.6818   =>  pieza OK (conforme).
-2. Semantica SHAP:
-   - SHAP POSITIVO (+) => la variable EMPUJA hacia el DEFECTO (NOK).
+1. El umbral de clasificacion es 0.4606.
+   Si P(NOK) >= 0.4606 => NOK (defectuosa).
+   Si P(NOK) < 0.4606 => OK (conforme). Absoluto e inamovible.
+2. En el analisis SHAP:
+   - SHAP POSITIVO (+) => la variable EMPUJA la prediccion hacia el DEFECTO (NOK).
    - SHAP NEGATIVO (-) => la variable APOYA la CALIDAD (OK).
-   - Los valores son NETOS: ya incorporan la contribucion de las derivadas.
-3. Tono: asertivo, tecnico, sin rodeos. Prohibido usar expresiones vagas.
+   - Los valores son impactos NETOS (ya incorporan la contribucion algebraica).
+3. Tono: asertivo, tecnico, sin rodeos.
+   No usar expresiones vagas como "podria ser" o "quizas".
 4. Estructura de respuesta obligatoria:
-   1. Diagnostico
-   2. Variables criticas
-   3. Accion recomendada
-5. Respuesta maxima: 15 segundos de lectura.
+   1. Diagnostico: resultado con probabilidad.
+   2. Variables criticas: mayor impacto SHAP.
+   3. Accion recomendada: que revisar (si NOK) o confirmacion de conformidad (si OK).
+5. Si hay valores OK cercanos a sus limites operacionales, mencionarlos como alerta
+   preventiva.
+6. Respuesta maxima: 15 segundos de lectura. Ser conciso.
 ```
 
 ### User Prompt - Datos de la inspeccion
 
-Cada consulta al LLM inyecta automaticamente el contexto de la prediccion activa:
+Cada consulta al LLM inyecta automaticamente el contexto en formato estructurado:
 
 ```
-DATOS DE LA INSPECCION
+══ INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ══
+1. RESPONDE ÚNICA Y EXCLUSIVAMENTE EN ESPAÑOL.
+2. Basa tu diagnostico SOLO en las N variables listadas abajo. No menciones variables fantasma.
+3. REGLA DE PORCENTAJES: El valor P(NOK) es la probabilidad de DEFECTO.
+   Si la mencionas, aclara siempre que es probabilidad de DEFECTO.
+
+══ DATOS DE LA INSPECCION ══
 Veredicto:             NOK
-P(NOK):                0.7431  (74.31%)
-P(OK):                 0.2569  (25.69%)
-Umbral sagrado:        0.6818
+P(NOK) [Prob. Defecto]: 0.7431  (74.31%)
+Umbral:                0.4606
 Decision:              P(NOK) >= umbral -> DEFECTO confirmado
 
 ANALISIS SHAP - IMPACTO NETO POR SENSOR (Top N)
@@ -379,7 +397,7 @@ ANALISIS SHAP - IMPACTO NETO POR SENSOR (Top N)
   Indice de Correlacion Global     valor=    0.0043   SHAP_neto=+0.09100  (DEFECTO)
   velocidad_extrusora       valor=   34.2000   SHAP_neto=-0.06700  (CALIDAD)
 
-PREGUNTA DEL OPERARIO
+══ PREGUNTA DEL OPERARIO ══
 [pregunta introducida por el operario]
 ```
 
@@ -419,7 +437,7 @@ Interfaz disenada para operarios de planta con menos de 10 minutos de formacion
 | Exp_02 | XGBoost + KMeans | 0.69 | 0.56 | 0.31 | 0.81 | 0.28 | 155s |
 | Exp_03 | PyTorch MLP | 0.68 | 0.56 | 0.31 | 0.80 | 0.28 | 225s |
 | Exp_04 | Cluster+Conquer | 0.69 | 0.57 | 0.32 | 0.81 | 0.29 | 113s |
-| **Exp_05** | **VAE+CatBoost** | **0.69** | **0.57** | **0.35** | **0.80** | **0.33** | **40s** |
+| **Exp_05** | **VAE+CatBoost v2** | **0.67** | **0.57** | **0.36** | **0.77** | **0.39** | **40s** |
 | Exp_06 | XGBOD | 0.71 | 0.58 | 0.34 | 0.83 | 0.28 | 246s |
 | Exp_07 | DART+UMAP | 0.69 | 0.57 | 0.32 | 0.82 | 0.27 | 757s* |
 | Exp_08 | ASL+LightGBM | 0.69 | 0.56 | 0.31 | 0.81 | 0.27 | 15s |
@@ -428,7 +446,7 @@ Interfaz disenada para operarios de planta con menos de 10 minutos de formacion
 | Exp_11 | Ultimate Hybrid | 0.69 | 0.52 | 0.19 | 0.86 | 0.11 | 730s |
 
 **Criterio de seleccion:** Recall OK es la metrica prioritaria para CTAG.
-Exp_05 es el maximo absoluto en Recall OK con un tiempo de entrenamiento razonable (40s).
+Exp_05 v2 es el maximo absoluto en Recall OK con un tiempo de entrenamiento razonable (40s).
 
 ---
 

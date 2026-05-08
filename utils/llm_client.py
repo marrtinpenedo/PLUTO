@@ -28,7 +28,7 @@ LLM_MODEL        = "llama3"      # Cambiar si se usa otro modelo (ej. "mistral")
 REQUEST_TIMEOUT  = 90            # segundos para streaming
 
 # Umbral 
-NOK_THRESHOLD = 0.4606  # esto estaría bien cambiarlo para que lo coja del pkl si se puede - Lucas
+NOK_THRESHOLD = 0.4606 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
