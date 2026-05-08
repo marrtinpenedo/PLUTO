@@ -279,9 +279,9 @@ def build_app() -> gr.Blocks:
     ollama_status, ollama_msg = check_ollama(LLM_MODEL)
     ollama_ok = (ollama_status == OllamaStatus.SERVER_UP)
     ollama_badge = (
-        '<span style="color:#34d399;font-weight:700;">* Online</span>'
+        '<span style="color:#34d399;font-weight:700;">* Online *</span>'
         if ollama_ok else
-        '<span style="color:#f87171;font-weight:700;">* Offline</span>'
+        '<span style="color:#f87171;font-weight:700;">* Offline *</span>'
     )
 
     # Pre-computar secciones de acordeon (chunks de SECTION_SZ variables)
@@ -309,7 +309,7 @@ def build_app() -> gr.Blocks:
         batch_raw_state    = gr.State(value=None)  # X_aligned from batch prediction
         batch_selected_idx = gr.State(value=None)  # Selected row index in batch table
 
-        # ── CABECERA ──────────────────────────────────────────────────────────
+# ── CABECERA ──────────────────────────────────────────────────────────
         gr.HTML(f"""
         <div id="pluto-header">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
@@ -318,30 +318,30 @@ def build_app() -> gr.Blocks:
                 PLUTO
               </div>
               <div style="color:#475f7b;font-size:0.875em;margin-top:3px;">
-                Sistema de Inspeccion de Calidad Industrial - CTAG - v2.2 - Motor: Exp_05 (VAE+CatBoost)
+                Sistema de Inspeccion de Calidad Industrial - CTAG - VAE+CatBoost
               </div>
             </div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+              
+              <!-- CAJA 1 MODIFICADA -->
               <div class="stat-pill">
                 <div style="font-size:0.7em;color:#475f7b;text-transform:uppercase;letter-spacing:1px;">Modelo</div>
-                <div style="color:#e2e8f0;font-weight:700;font-size:0.95em;">VAE + CatBoost</div>
-                <div style="font-size:0.75em;color:#475f7b;">Experimento 05</div>
+                <div style="color:#e2e8f0;font-weight:700;font-size:1.1em;">VAE + CatBoost</div>
+                <div style="font-size:0.75em;color:#475f7b;">&nbsp;</div>
               </div>
-              <div class="stat-pill">
-                <div style="font-size:0.7em;color:#475f7b;text-transform:uppercase;letter-spacing:1px;">Umbral NOK</div>
-                <div style="color:#fbbf24;font-weight:700;font-size:1.1em;">{eng.threshold:.4f}</div>
-                <div style="font-size:0.75em;color:#475f7b;">P(NOK) >= umbral -> NOK</div>
-              </div>
+              
               <div class="stat-pill">
                 <div style="font-size:0.7em;color:#475f7b;text-transform:uppercase;letter-spacing:1px;">Variables</div>
                 <div style="color:#e2e8f0;font-weight:700;font-size:1.1em;">{len(eng.num_cols) + len(eng.cat_cols)}</div>
                 <div style="font-size:0.75em;color:#475f7b;">{len(eng.num_cols)} num - {len(eng.cat_cols)} cat</div>
               </div>
+              
               <div class="stat-pill">
                 <div style="font-size:0.7em;color:#475f7b;text-transform:uppercase;letter-spacing:1px;">LLM Ollama</div>
                 <div style="font-weight:700;">{ollama_badge}</div>
                 <div style="font-size:0.75em;color:#475f7b;">{LLM_MODEL}</div>
               </div>
+              
             </div>
           </div>
         </div>
@@ -367,44 +367,47 @@ def build_app() -> gr.Blocks:
                         label="Cargar fichero (CSV o Excel)",
                         file_types=[".csv", ".xlsx", ".xls"],
                         scale=1,
+                        height=125,
                         elem_id="csv_upload",
                     )
 
                 range_warnings = gr.HTML(value="", label="")
 
-                input_comps: list = []
+                with gr.Accordion("Ajuste Manual de Variables", open=False):
 
-                for sec_feats in sections:
-                    sec_label = f"{sec_feats[0]}  ->  {sec_feats[-1]}"
-                    with gr.Accordion(label=sec_label, open=False):
-                        for row_start in range(0, len(sec_feats), GROUP_SIZE):
-                            row_feats = sec_feats[row_start: row_start + GROUP_SIZE]
-                            with gr.Row():
-                                for feat in row_feats:
-                                    if feat in eng.cat_cols:
-                                        cats = eng.categories.get(feat, [])
-                                        comp = gr.Dropdown(
-                                            choices=cats,
-                                            value=cats[0] if cats else None,
-                                            label=feat,
-                                            scale=1,
-                                            min_width=120,
-                                            elem_id=f"inp_{feat.replace(' ', '_')}",
-                                        )
-                                    else:
-                                        st  = eng.col_stats.get(feat, {})
-                                        rng = (
-                                            f"Rango: [{st['min']:.2f}, {st['max']:.2f}]"
-                                            if st else ""
-                                        )
-                                        comp = gr.Number(
-                                            value=round(st.get("mean", 0.0), 4),
-                                            label=feat if not rng else f"{feat}  ({rng})",
-                                            scale=1,
-                                            min_width=120,
-                                            elem_id=f"inp_{feat.replace(' ', '_')}",
-                                        )
-                                    input_comps.append(comp)
+                    input_comps: list = []
+
+                    for sec_feats in sections:
+                        sec_label = f"{sec_feats[0]}  ->  {sec_feats[-1]}"
+                        with gr.Accordion(label=sec_label, open=False):
+                            for row_start in range(0, len(sec_feats), GROUP_SIZE):
+                                row_feats = sec_feats[row_start: row_start + GROUP_SIZE]
+                                with gr.Row():
+                                    for feat in row_feats:
+                                        if feat in eng.cat_cols:
+                                            cats = eng.categories.get(feat, [])
+                                            comp = gr.Dropdown(
+                                                choices=cats,
+                                                value=cats[0] if cats else None,
+                                                label=feat,
+                                                scale=1,
+                                                min_width=120,
+                                                elem_id=f"inp_{feat.replace(' ', '_')}",
+                                            )
+                                        else:
+                                            st  = eng.col_stats.get(feat, {})
+                                            rng = (
+                                                f"Rango: [{st['min']:.2f}, {st['max']:.2f}]"
+                                                if st else ""
+                                            )
+                                            comp = gr.Number(
+                                                value=round(st.get("mean", 0.0), 4),
+                                                label=feat if not rng else f"{feat}  ({rng})",
+                                                scale=1,
+                                                min_width=120,
+                                                elem_id=f"inp_{feat.replace(' ', '_')}",
+                                            )
+                                        input_comps.append(comp)
 
                 with gr.Row():
                     btn_predict = gr.Button(
@@ -428,6 +431,7 @@ def build_app() -> gr.Blocks:
                     minimum=0, maximum=1, value=0, step=0.001,
                     label=f"Probabilidad de NOK  (umbral = {eng.threshold:.4f})",
                     interactive=False,
+                    visible=False,
                     elem_id="result_slider",
                 )
 
@@ -453,6 +457,7 @@ def build_app() -> gr.Blocks:
                 label="Fichero de lote (CSV o Excel, multifila)",
                 file_types=[".csv", ".xlsx", ".xls"],
                 scale=4,
+                height=125,
                 elem_id="batch_file",
             )
             btn_batch = gr.Button(
