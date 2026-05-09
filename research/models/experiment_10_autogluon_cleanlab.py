@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 10 - CleanLab Confident Learning + Meta-Stack
 ---------------------------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de CleanLab o cualquier procesamiento.
   - Codificación Categórica e Imputación realizadas DESPUÉS del holdout split.

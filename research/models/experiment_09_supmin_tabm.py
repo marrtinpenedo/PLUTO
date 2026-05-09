@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-EXPERIMENTO 09 - SupMin + TabM (Vanguard Architecture)
+EXPERIMENTO 09 - SupMin + TabM 
 ----------------------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage y con arquitecturas conectadas.
 Cambios:
   - Holdout test separado antes del preprocesamiento.
   - Imputación y OrdinalEncoding aplicados DENTRO del CV loop.
@@ -378,7 +377,6 @@ def main():
         for x_h, _ in holdout_ld:
             x_h = x_h.to(device)
             
-            # CAMBIO: Conectar arquitecturas para las predicciones del Holdout
             z_latents_h = final_encoder(x_h)
             combined_h = torch.cat([x_h, z_latents_h], dim=1)
             

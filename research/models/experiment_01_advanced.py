@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 01 - Optmización Continua y Threshold Tuning en LightGBM
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios respecto al original:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - Feature engineering (estadísticas por fila) aplicado PER-FOLD.
@@ -66,7 +65,7 @@ def apply_feature_engineering(X_train, X_val, cat_cols, num_cols):
         # Val/Holdout adopta EXACTAMENTE las mismas categorías que Train
         X_val[col] = pd.Categorical(X_val[col], categories=X_train[col].cat.categories)
 
-    # 2. Feature Engineering por fila (Totalmente seguro contra leakage)
+    # 2. Feature Engineering por fila
     if num_cols:
         X_train['num_sum'] = X_train[num_cols].sum(axis=1)
         X_train['num_mean'] = X_train[num_cols].mean(axis=1)
@@ -94,7 +93,7 @@ def main():
     print("[1] Cargando dataset crudo...")
     X, y = load_raw_data()
 
-    # 2. HOLDOUT TEST SPLIT (20%) — ANTES de cualquier procesamiento
+    # 2. HOLDOUT TEST SPLIT (20%) 
     print("[2] Separando holdout test (20%) ANTES de cualquier FE...")
     X_pool, X_holdout, y_pool, y_holdout = train_test_split(
         X, y, test_size=0.20, stratify=y, random_state=RANDOM_STATE
@@ -139,7 +138,7 @@ def main():
         X_tr_raw, y_tr = X_pool.iloc[train_idx], y_pool[train_idx]
         X_vl_raw, y_vl = X_pool.iloc[val_idx], y_pool[val_idx]
 
-        # FE per-fold (no leakage — row-level stats are independent per sample)
+        # FE per-fold
         X_tr, X_vl = apply_feature_engineering(X_tr_raw, X_vl_raw, cat_cols, num_cols)
 
         train_data = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cat_cols)

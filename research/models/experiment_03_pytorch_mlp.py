@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 03 - Red Neuronal Residual con Focal Loss (PyTorch)
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - OrdinalEncoder e Imputación post-split para evitar fugas.

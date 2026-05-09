@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-EXPERIMENTO 04 - "Divide & Conquer" (Mixture of Local Experts)
+EXPERIMENTO 04 - "Divide & Conquer" 
 --------------------------------------------------------------------
-VERSIÓN FINAL BLINDADA — Sin data leakage.
 Protocolo aplicado:
   - Holdout test (20%) separado en crudo.
   - OrdinalEncoder con memoria para evitar desincronización de categorías.

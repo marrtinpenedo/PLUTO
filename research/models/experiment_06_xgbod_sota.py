@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-EXPERIMENTO 06 - XGBOD (State-of-the-Art Outlier Detection)
+EXPERIMENTO 06 - XGBOD (Outlier Detection)
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - OrdinalEncoding e Imputación realizados POST-SPLIT de forma segura.

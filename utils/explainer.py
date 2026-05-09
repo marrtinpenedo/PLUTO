@@ -1,8 +1,7 @@
 """
 utils/explainer.py
 ==================
-Modulo de explicabilidad SHAP para el modelo CatBoost del Exp_05.
-Version 2.2 
+Modulo de explicabilidad SHAP para el modelo CatBoost del Exp_05. 
 
     5.1  Agregacion algebraica: suma de variables derivadas (_bin) a su base fisica.
     5.2  Filtro de relevancia: descarte relativo al 15% del Top-1 (minimo 3 vars).
@@ -118,7 +117,7 @@ class SHAPExplainer:
             reverse=True,
         )
 
-        # ── 3. Filtro de caida relativa del 15% (Sec 5.2) ────────────────────
+        # ── 3. Filtro de caida relativa del 15%  ────────────────────
         if ranked:
             top1_abs = abs(ranked[0][2])
             threshold_15 = 0.15 * top1_abs if top1_abs > 0 else 0.0
@@ -129,10 +128,10 @@ class SHAPExplainer:
                     filtered.append(item)
             ranked = filtered
 
-        # ── 4. Balanceo dinamico Real/VAE (Sec 5.3) ──────────────────────────
+        # ── 4. Balanceo dinamico Real/VAE ──────────────────────────
         result = self._balance(ranked, min_k, max_k)
 
-        # ── 5. Renombrado industrial (Sec 5.4) ───────────────────────────────
+        # ── 5. Renombrado industrial ───────────────────────────────
         result_named = [
             (_industrial_name(base), val, shap_net)
             for base, val, shap_net in result

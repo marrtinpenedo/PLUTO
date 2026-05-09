@@ -3,7 +3,7 @@
 """
 PLUTO - Sistema de Inspección de Calidad Industrial
 ====================================================
-Proyecto PIIA - Cliente CTAG - v2.0
+Proyecto PIIA - Cliente CTAG
 
 Motor    : Experimento 05 (VAE + CatBoost)
 Interfaz : Gradio  ->  http://localhost:7860

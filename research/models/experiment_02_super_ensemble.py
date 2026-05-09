@@ -6,7 +6,6 @@
 """
 EXPERIMENTO 02 - Híper-Optimización de Modelo Industrial (XGBoost)
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - KMeans + StandardScaler DENTRO del CV loop (fit sólo en fold-train).
