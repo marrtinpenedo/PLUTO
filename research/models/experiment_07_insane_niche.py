@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 07 - DART + RUSBoost + UMAP + Polynomial Interactions
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage y matemáticamente seguro.
 Cambios integrados:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - OrdinalEncoding e imputación seguros POST-SPLIT.
@@ -73,7 +72,6 @@ def load_raw_data():
     return X, y
 
 
-# CORRECCIÓN: Añadido parámetro real_num_cols para evitar varianza de categorías
 def apply_fe_per_fold(X_train, X_val, y_train, real_num_cols):
     """
     Per-fold feature engineering:
@@ -112,7 +110,7 @@ def apply_fe_per_fold(X_train, X_val, y_train, real_num_cols):
     X_val['umap_x'] = X_umap_vl[:, 0]
     X_val['umap_y'] = X_umap_vl[:, 1]
 
-    # 3. Feature selection: fit LightGBM on TRAIN only
+    # 3. Feature selection
     model_fs = lgb.LGBMClassifier(n_estimators=300, random_state=RANDOM_STATE, is_unbalance=True, verbosity=-1)
     model_fs.fit(X_train, y_train)
     importances = model_fs.feature_importances_

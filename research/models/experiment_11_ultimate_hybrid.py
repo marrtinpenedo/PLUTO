@@ -10,7 +10,6 @@ Cambios integrados:
   - Imputación y Codificación Ordinal hecha de forma segura post-split.
   - FEPipeline restringido SÓLO a variables numéricas reales (evita crash de varianza).
   - CleanLab y Optuna aplicados de forma aislada.
-  - Cero Data Leakage.
 """
 
 import os
@@ -118,7 +117,6 @@ def train_vae_and_get_errors(X_train_scaled, X_val_scaled):
 # Feature Engineering Pipeline
 # ==============================================================================
 class FEPipeline:
-    """Encapsulates all feature engineering. Operates ONLY on real numeric columns for variance."""
 
     def __init__(self, real_num_cols):
         self.poly = None

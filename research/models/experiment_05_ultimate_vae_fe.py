@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 05 - VAE + Discretization + CatBoost
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test separado antes de cualquier transformación.
   - OrdinalEncoder aplicado post-split para evitar fugas.

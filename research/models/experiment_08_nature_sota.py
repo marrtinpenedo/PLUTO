@@ -4,7 +4,6 @@
 """
 EXPERIMENTO 08 - NATURE 2025 & ASYMMETRIC LOSS SOTA (ASL + ORD)
 --------------------------------------------------------------------
-VERSIÓN CORREGIDA — Sin data leakage.
 Cambios:
   - Holdout test (20%) separado ANTES de cualquier procesamiento.
   - Imputación, Codificación y Feature Engineering aplicados POST-SPLIT.

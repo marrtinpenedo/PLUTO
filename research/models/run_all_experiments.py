@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Runner script: executes all experiments sequentially and captures metrics.
-"""
+
 
 import subprocess
 import sys
