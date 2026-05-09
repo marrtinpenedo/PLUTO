@@ -1,6 +1,6 @@
 # PLUTO - Sistema de Inspeccion de Calidad Industrial
 
-**Proyecto PIIA - Cliente CTAG - v2.2**
+**Proyecto PIIA - Cliente CTAG**
 
 Sistema de clasificacion de piezas industriales (OK/NOK) a partir de 102 variables de proceso.
 Integra un modelo de Machine Learning para el veredicto, explicabilidad via **SHAP dinamico**
@@ -35,7 +35,7 @@ ollama run  llama3              # puede cerrarse mientras no se haga un stop
 Si `models/exp05_vae_catboost_v2.pkl` no existe aun:
 
 ```bash
-python scripts/export_exp05_model_v2.py
+python scripts/export_exp05_model.py
 ```
 
 El script entrena el pipeline completo (5-Fold OOF, VAE + CatBoost Nativo)
@@ -57,7 +57,7 @@ Interfaz disponible en: **http://localhost:7860**
 +--------------------------------------------------------------------+
 |                      INTERFAZ (app/ui.py - Gradio)                 |
 |  Carga CSV/Excel  ->  Autocompletado formulario (102 vars)          |
-|  Banner OK/NOK + Slider P(NOK) | Tabla SHAP + Chatbot LLM          |
+|  Banner OK/NOK con P(NOK)      | Tabla SHAP + Chatbot LLM          |
 |  Prediccion por Lotes (N filas, descarga CSV resultados)           |
 +------------------------------+-------------------------------------+
                                |
@@ -198,6 +198,7 @@ Entrada (102 vars originales)
 **Prediccion por lotes**
 - Seccion separada para subir un fichero con **N filas** y obtener el veredicto de cada pieza.
 - Resultado descargable como CSV con columnas `Fila`, `Veredicto`, `P(NOK)`, `P(OK)`.
+- Posibilidad de seleccionar una pieza específica del lote para **Inspeccionar Detalle**, cargando sus datos en la vista individual para ver la tabla SHAP y diagnosticar con el LLM.
 
 ### 2. Validacion de rangos
 
@@ -213,7 +214,7 @@ pero el operario es informado del valor anomalo.
   - `P(NOK) >= umbral` -> **Banner rojo NOK** (pieza DEFECTUOSA).
   - `P(NOK) < umbral`  -> **Banner verde OK** (pieza CONFORME).
 
-### 4. Tabla SHAP Neta (v2.2)
+### 4. Tabla SHAP Neta
 
 Ver seccion detallada mas abajo.
 
@@ -223,7 +224,7 @@ Ver seccion detallada mas abajo.
 
 ---
 
-## Explicabilidad SHAP v2.2 - Logica Detallada
+## Explicabilidad SHAP - Logica Detallada
 
 El modulo `utils/explainer.py` implementa cuatro transformaciones secuenciales
 sobre los valores SHAP crudos de CatBoost para obtener una tabla industrialmente
@@ -334,7 +335,7 @@ Si hubiera 3 VAE y 1 Real, el algoritmo bajaria en el ranking buscando
 | Endpoint | `http://localhost:11434/api/generate` |
 | Modelo por defecto | `llama3` (configurable en `llm_client.py`) |
 | Timeout streaming | 90 s |
-| Umbral sagrado | **0.4606** (constante `NOK_THRESHOLD` en el modulo) |
+| Umbral | **0.4606** (constante `NOK_THRESHOLD` en el modulo) |
 
 ### Verificacion de disponibilidad
 
@@ -346,59 +347,55 @@ El badge en la cabecera de la UI muestra el estado en tiempo real (Online / Offl
 
 ### System Prompt - Rol del LLM
 
-El campo `"system"` del payload de Ollama contiene las instrucciones de rol permanentes:
+El campo `"system"` del payload de Ollama contiene las instrucciones de rol permanentes adaptativas:
 
 ```
-Eres un Ingeniero Senior de Calidad del proyecto PLUTO para la empresa CTAG.
-Tu mision es analizar el resultado del sistema automatico de clasificacion de piezas
-industriales y comunicar el diagnostico al operario de linea de forma directa,
-tecnica y sin ambiguedades.
+Eres un Ingeniero Senior de Calidad del proyecto PLUTO (CTAG). Recibes datos de un sistema automático de inspección de piezas industriales y respondes al operario de línea de forma directa, técnica y sin ambigüedades. 
 
-REGLAS DE INTERPRETACION OBLIGATORIAS:
-1. El umbral de clasificacion es 0.4606.
-   Si P(NOK) >= 0.4606 => NOK (defectuosa).
-   Si P(NOK) < 0.4606 => OK (conforme). Absoluto e inamovible.
-2. En el analisis SHAP:
-   - SHAP POSITIVO (+) => la variable EMPUJA la prediccion hacia el DEFECTO (NOK).
-   - SHAP NEGATIVO (-) => la variable APOYA la CALIDAD (OK).
-   - Los valores son impactos NETOS (ya incorporan la contribucion algebraica).
-3. Tono: asertivo, tecnico, sin rodeos.
-   No usar expresiones vagas como "podria ser" o "quizas".
-4. Estructura de respuesta obligatoria:
-   1. Diagnostico: resultado con probabilidad.
-   2. Variables criticas: mayor impacto SHAP.
-   3. Accion recomendada: que revisar (si NOK) o confirmacion de conformidad (si OK).
-5. Si hay valores OK cercanos a sus limites operacionales, mencionarlos como alerta
-   preventiva.
-6. Respuesta maxima: 15 segundos de lectura. Ser conciso.
+REGLAS ABSOLUTAS (nunca las ignores):
+R1. Umbral fijo: si P(NOK) >= 0.4606 → pieza NOK (defectuosa); si P(NOK) < 0.4606 → pieza OK (conforme).
+R2. Semántica SHAP:
+    · Valor SHAP POSITIVO (+) → la variable empuja hacia DEFECTO (NOK).
+    · Valor SHAP NEGATIVO (-) → la variable empuja hacia CALIDAD (OK).
+    Los valores ya son impactos netos sobre el sensor físico original.
+R3. Responde SIEMPRE en español, tono técnico y asertivo. Prohibido usar 'podría', 'quizás', 'tal vez'.
+R4. Usa SOLO las variables que aparecen en los datos. No inventes ni menciones variables ausentes.
+R5. Si mencionas P(NOK), especifica siempre que es probabilidad de DEFECTO.
+
+ESTRUCTURA DE RESPUESTA (adáptala a la pregunta del operario):
+· Si pregunta por el DIAGNÓSTICO GENERAL o el RESULTADO...
+· Si pregunta por QUÉ la pieza es NOK o cuál es la CAUSA DEL DEFECTO...
+· Si pregunta por QUÉ la pieza es OK o qué APOYA LA CALIDAD...
+· Si pregunta por UNA VARIABLE CONCRETA...
+· Si pregunta algo que los datos NO PERMITEN RESPONDER...
 ```
 
 ### User Prompt - Datos de la inspeccion
 
-Cada consulta al LLM inyecta automaticamente el contexto en formato estructurado:
+Cada consulta al LLM inyecta automaticamente el contexto en formato estructurado separando explícitamente los drivers de decisión:
 
 ```
-══ INSTRUCCIONES ESTRICTAS PARA ESTA RESPUESTA ══
-1. RESPONDE ÚNICA Y EXCLUSIVAMENTE EN ESPAÑOL.
-2. Basa tu diagnostico SOLO en las N variables listadas abajo. No menciones variables fantasma.
-3. REGLA DE PORCENTAJES: El valor P(NOK) es la probabilidad de DEFECTO.
-   Si la mencionas, aclara siempre que es probabilidad de DEFECTO.
+══ DATOS DE INSPECCIÓN ══
+Veredicto:              NOK
+P(NOK) [prob. defecto]: 0.7431 (74.31%)
+Decisión:               P(NOK)=0.7431 >= umbral=0.4606 → NOK confirmado
 
-══ DATOS DE LA INSPECCION ══
-Veredicto:             NOK
-P(NOK) [Prob. Defecto]: 0.7431  (74.31%)
-Umbral:                0.4606
-Decision:              P(NOK) >= umbral -> DEFECTO confirmado
+══ TABLA SHAP COMPLETA (4 variables analizadas) ══
 
-ANALISIS SHAP - IMPACTO NETO POR SENSOR (Top N)
-(Valores netos: suma algebraica sensor fisico + derivadas binarizadas)
-  presion_entrada           valor=    2.3100   SHAP_neto=+0.18200  (DEFECTO)
-  temperatura_camara        valor=  187.5000   SHAP_neto=+0.11400  (DEFECTO)
-  Indice de Correlacion Global     valor=    0.0043   SHAP_neto=+0.09100  (DEFECTO)
-  velocidad_extrusora       valor=   34.2000   SHAP_neto=-0.06700  (CALIDAD)
+── SECCION 1: Variables que EMPUJAN a DEFECTO (SHAP +) — 3 variables ──
+  1. presion_entrada: valor=2.3100 | SHAP=+0.1820 → DEFECTO
+  2. temperatura_camara: valor=187.5000 | SHAP=+0.1140 → DEFECTO
+  3. Indice de Correlacion Global: valor=0.0043 | SHAP=+0.0910 → DEFECTO
+
+── SECCION 2: Variables que APOYAN CALIDAD (SHAP -) — 1 variables ──
+  4. velocidad_extrusora: valor=34.2000 | SHAP=-0.0670 → CALIDAD
+
+RESUMEN: 3 empujan a DEFECTO + 1 apoyan CALIDAD = 4 total.
 
 ══ PREGUNTA DEL OPERARIO ══
 [pregunta introducida por el operario]
+
+Usa TODAS las variables de AMBAS secciones en tu análisis. Responde adaptándote al tipo de pregunta según las reglas del sistema.
 ```
 
 El LLM nunca recibe datos crudos ni nombres tecnicos de variables VAE:
