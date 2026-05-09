@@ -1,6 +1,6 @@
 # PLUTO - Sistema de Inspeccion de Calidad Industrial
 
-**Proyecto PIIA - Cliente CTAG - v2.2**
+**Proyecto PIIA - Cliente CTAG**
 
 Sistema de clasificacion de piezas industriales (OK/NOK) a partir de **102 variables de proceso**.
 Integra un pipeline VAE + CatBoost para el veredicto, explicabilidad via **SHAP nativo CatBoost**
