@@ -221,10 +221,9 @@ def main():
     )
     print(f"  Train pool : {len(X_pool):,}  |  Holdout : {len(X_holdout):,}")
 
-# -- 5-Fold OOF (Hermético sin Leakage) ------------------------------------
+# -- 5-Fold OOF ------------------------------------
     print("\n[1/4] Entrenamiento 5-Fold OOF y extracción de latentes ...")
     
-    # ¡CORRECCIÓN AQUÍ! Definimos las columnas globales antes del bucle
     num_cols_pool = X_pool.select_dtypes(exclude=["object"]).columns.tolist()
     cat_cols_pool = X_pool.select_dtypes(include=["object"]).columns.tolist()
 
@@ -257,7 +256,6 @@ def main():
         fold_vae = train_vae(X_tr_sc, latent_dim=LATENT_DIM, epochs=VAE_EPOCHS, device=device)
         
         # 3. Aplicar FE completo usando los artefactos locales del fold
-        # Modifica apply_fe para que no ignore "fit" si se pasa scaler
         X_tr_f, X_vl_f, _ = apply_fe(
             X_tr, X_vl, y_tr,
             vae=fold_vae, scaler=fold_scaler, train_medians=fold_medians, 
@@ -295,7 +293,7 @@ def main():
     num_cols_pool = X_pool.select_dtypes(exclude=["object"]).columns.tolist()
     cat_cols_pool = X_pool.select_dtypes(include=["object"]).columns.tolist()
     
-    # Aquí SÍ es seguro usar todo X_pool porque es el paso final antes del Holdout
+    # Usamos todo X_pool porque es el paso final antes del Holdout
     global_medians = X_pool[num_cols_pool].median()
     global_scaler = StandardScaler()
     X_pool_sc = global_scaler.fit_transform(X_pool[num_cols_pool].fillna(global_medians))
@@ -321,9 +319,9 @@ def main():
     )
     final_model.fit(X_pool_fe, y_pool, cat_features=cat_cols_pool)
 
-    # -- Evaluación Honesta sobre Holdout --------------------------------------
+    # -- Evaluación sobre Holdout --------------------------------------
     print("\n" + "="*65)
-    print("MÉTRICAS DE EVALUACIÓN SOBRE HOLDOUT (Datos Invisibles)")
+    print("MÉTRICAS DE EVALUACIÓN SOBRE HOLDOUT")
     print("="*65)
     holdout_proba = final_model.predict_proba(X_holdout_fe)[:, 1]
     holdout_preds = (holdout_proba >= best_t).astype(int)
@@ -375,8 +373,8 @@ def main():
     MODEL_OUT.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(pkl_payload, MODEL_OUT)
 
-    print(f"\n✓ Artefacto limpio serializado en: {MODEL_OUT}")
-    print(f"✓ Tiempo total: {time.time() - t0:.1f}s")
+    print(f"\n Artefacto limpio serializado en: {MODEL_OUT}")
+    print(f" Tiempo total: {time.time() - t0:.1f}s")
     print("=" * 65)
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ Responsabilidades:
     - Botón de carga CSV para autocompletado automático de todos los campos.
     - Validación de rangos: warnings visuales (no bloqueantes) si un valor
       está fuera del rango detectado en el dataset de referencia.
-    - Panel de resultados: banner OK/NOK + slider de probabilidad + tabla SHAP.
+    - Panel de resultados: banner OK/NOK + tabla SHAP.
     - Chatbot con streaming del LLM Ollama, con contexto SHAP inyectado.
 
 Motor: Experimento 05 (VAE + CatBoost) - cargado desde `utils/ml_engine.py`.
